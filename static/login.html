@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>N2X Admin Login</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; font-family: Arial, Helvetica, sans-serif; }
+  body { background: #1e3a8a; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+  .login-card { background: #fff; border-radius: 14px; padding: 36px 32px; width: 360px; max-width: calc(100vw - 40px); box-shadow: 0 20px 50px rgba(0,0,0,0.25); }
+  .login-card h1 { font-size: 1.4em; color: #1e3a8a; margin-bottom: 6px; text-align: center; }
+  .login-card p.sub { font-size: 13px; color: #64748b; text-align: center; margin-bottom: 24px; }
+  .field { margin-bottom: 16px; }
+  .field label { display: block; font-size: 13px; font-weight: 600; color: #334155; margin-bottom: 6px; }
+  .field input { width: 100%; border: 1px solid #cbd5e1; border-radius: 8px; padding: 11px 12px; font-size: 14px; outline: none; }
+  .field input:focus { border-color: #2563eb; }
+  .btn { width: 100%; background: #2563eb; color: #fff; border: none; border-radius: 8px; padding: 12px; font-size: 15px; font-weight: 600; cursor: pointer; }
+  .btn:hover { background: #1d4ed8; }
+  .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+  .msg { margin-top: 14px; padding: 10px 12px; border-radius: 8px; font-size: 14px; display: none; }
+  .msg.show { display: block; }
+  .msg.err { background: #fee2e2; color: #991b1b; }
+  .back { display: block; text-align: center; margin-top: 16px; font-size: 13px; color: #94a3b8; text-decoration: none; }
+  .back:hover { color: #2563eb; }
+</style>
+</head>
+<body>
+
+<div class="login-card">
+  <h1>N2X Admin Panel</h1>
+  <p class="sub">Aagay barhnay ke liye login karo</p>
+  <form id="loginForm">
+    <div class="field">
+      <label for="username">Username</label>
+      <input id="username" type="text" autocomplete="username" required />
+    </div>
+    <div class="field">
+      <label for="password">Password</label>
+      <input id="password" type="password" autocomplete="current-password" required />
+    </div>
+    <button id="loginBtn" class="btn" type="submit">Login</button>
+    <div id="msg" class="msg err"></div>
+  </form>
+  <a class="back" href="/">&larr; Waps site par</a>
+</div>
+
+<script>
+  var form = document.getElementById("loginForm");
+  var msg = document.getElementById("msg");
+
+  form.addEventListener("submit", async function (e) {
+    e.preventDefault();
+    var username = document.getElementById("username").value.trim();
+    var password = document.getElementById("password").value;
+    if (!username || !password) {
+      msg.textContent = "Username aur password dono likho.";
+      msg.classList.add("show");
+      return;
+    }
+    var btn = document.getElementById("loginBtn");
+    btn.disabled = true;
+    btn.textContent = "Logging in...";
+    try {
+      var res = await fetch("/admin/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: username, password: password }),
+      });
+      var data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Login failed");
+      window.location.href = "/admin";
+    } catch (err) {
+      msg.textContent = err.message;
+      msg.classList.add("show");
+      btn.disabled = false;
+      btn.textContent = "Login";
+    }
+  });
+</script>
+</body>
+</html>
