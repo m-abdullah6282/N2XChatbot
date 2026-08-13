@@ -1,4 +1,6 @@
 import os
+import shutil
+import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
@@ -8,8 +10,13 @@ from app.db import (
     create_api_key,
     list_api_keys,
     delete_api_key,
+    create_agent,
+    get_agent,
+    list_agents,
+    update_agent,
+    delete_agent,
 )
-from app.models.schemas import ApiKeyCreate
+from app.models.schemas import ApiKeyCreate, AgentCreate, AgentUpdate
 from app.services.auth import (
     COOKIE_NAME,
     create_session,
@@ -17,7 +24,8 @@ from app.services.auth import (
     is_authenticated,
     require_admin,
 )
-from app.services.vector_store import delete_points_by_filename
+from app.services.vector_store import delete_points_by_filename, delete_points_by_agent
+from app.routes.upload import agent_upload_dir
 
 router = APIRouter()
 UPLOAD_DIR = "uploaded_files"
@@ -67,25 +75,29 @@ def check_auth(request: Request):
 
 
 @router.get("/documents", dependencies=[Depends(require_admin)])
-def list_documents():
+def list_documents(agent_id: int | None = None):
+    base_dir = agent_upload_dir(agent_id) if agent_id is not None else UPLOAD_DIR
+    if not os.path.isdir(base_dir):
+        return []
     files = []
-    for name in os.listdir(UPLOAD_DIR):
-        path = os.path.join(UPLOAD_DIR, name)
+    for name in os.listdir(base_dir):
+        path = os.path.join(base_dir, name)
         if os.path.isfile(path) and name.lower().endswith(ALLOWED_EXTENSIONS):
             files.append({"filename": name, "size": os.path.getsize(path)})
     return files
 
 
 @router.delete("/documents/{filename}", dependencies=[Depends(require_admin)])
-def delete_document(filename: str):
+def delete_document(filename: str, agent_id: int | None = None):
     if not _safe_filename(filename):
         raise HTTPException(status_code=400, detail="Invalid filename")
 
-    path = os.path.join(UPLOAD_DIR, filename)
+    base_dir = agent_upload_dir(agent_id) if agent_id is not None else UPLOAD_DIR
+    path = os.path.join(base_dir, filename)
     if os.path.exists(path):
         os.remove(path)
 
-    delete_points_by_filename(filename)
+    delete_points_by_filename(filename, agent_id)
     return {"filename": filename, "message": "Document deleted"}
 
 
@@ -110,3 +122,51 @@ def delete_key(key_id: int):
     if not delete_api_key(key_id):
         raise HTTPException(status_code=404, detail="API key not found")
     return {"message": "API key deleted"}
+
+
+@router.get("/agents")
+def get_public_agents():
+    return [{"id": a["id"], "name": a["name"], "greeting": a["greeting"]} for a in list_agents()]
+
+
+@router.post("/agents", dependencies=[Depends(require_admin)])
+def create_new_agent(req: AgentCreate):
+    if not req.name.strip():
+        raise HTTPException(status_code=400, detail="Agent name is required")
+    try:
+        return create_agent(req.name.strip(), req.system_prompt, req.greeting)
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=400, detail="An agent with this name already exists")
+
+
+@router.get("/agents/{agent_id}", dependencies=[Depends(require_admin)])
+def get_agent_detail(agent_id: int):
+    agent = get_agent(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return agent
+
+
+@router.put("/agents/{agent_id}", dependencies=[Depends(require_admin)])
+def update_existing_agent(agent_id: int, req: AgentUpdate):
+    if not get_agent(agent_id):
+        raise HTTPException(status_code=404, detail="Agent not found")
+    if not req.name.strip():
+        raise HTTPException(status_code=400, detail="Agent name is required")
+    try:
+        ok = update_agent(agent_id, req.name.strip(), req.system_prompt, req.greeting)
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=400, detail="An agent with this name already exists")
+    if not ok:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return get_agent(agent_id)
+
+
+@router.delete("/agents/{agent_id}", dependencies=[Depends(require_admin)])
+def delete_existing_agent(agent_id: int):
+    if not get_agent(agent_id):
+        raise HTTPException(status_code=404, detail="Agent not found")
+    delete_points_by_agent(agent_id)
+    shutil.rmtree(agent_upload_dir(agent_id), ignore_errors=True)
+    delete_agent(agent_id)
+    return {"message": "Agent deleted"}

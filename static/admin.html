@@ -4,113 +4,160 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>N2X Admin Panel</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        fontFamily: { sans: ['Inter', 'Poppins', 'ui-sans-serif', 'system-ui', 'sans-serif'] },
+        colors: { brand: '#00C2B8', brandDark: '#0BA39B', charcoal: '#1A1A1A', slate: '#64748B' },
+      },
+    },
+  };
+</script>
 <style>
-  * { box-sizing: border-box; margin: 0; padding: 0; font-family: Arial, Helvetica, sans-serif; }
-  body { background: #f1f5f9; color: #0f172a; }
-  header { background: #1e3a8a; color: #fff; padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
-  header h1 { font-size: 1.3em; }
-  header a { color: #c7d2fe; text-decoration: none; font-size: 14px; }
-  .tabs { display: flex; background: #fff; border-bottom: 1px solid #e2e8f0; padding: 0 24px; }
-  .tab { padding: 14px 22px; cursor: pointer; border: none; background: none; font-size: 15px; font-weight: 600; color: #64748b; border-bottom: 3px solid transparent; }
-  .tab.active { color: #1e3a8a; border-bottom-color: #2563eb; }
-  main { max-width: 900px; margin: 24px auto; padding: 0 24px; }
+  * { font-family: 'Inter', Poppins, Arial, Helvetica, sans-serif; }
+  /* Tab/panel behavior (toggled in JS) */
+  .tab { color: #64748b; border-bottom: 3px solid transparent; }
+  .tab.active { color: #0BA39B; border-bottom-color: #00C2B8; }
   .panel { display: none; }
   .panel.active { display: block; }
-  .card { background: #fff; border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); margin-bottom: 20px; }
-  .card h2 { font-size: 1.1em; margin-bottom: 14px; color: #1e3a8a; }
-  .btn { background: #2563eb; color: #fff; border: none; border-radius: 8px; padding: 10px 18px; font-size: 14px; font-weight: 600; cursor: pointer; }
-  .btn:hover { background: #1d4ed8; }
+  /* Message boxes (class set in JS) */
+  .msg { padding: 10px 14px; border-radius: 10px; font-size: 14px; margin-top: 12px; display: none; }
+  .msg.show { display: block; }
+  .msg.ok { background: #d9f7f4; color: #0f766e; }
+  .msg.err { background: #fee2e2; color: #991b1b; }
+  /* Dropzone drag state */
+  .dropzone.drag { border-color: #00C2B8; background: #f0fdfa; }
+  /* Buttons referenced in JS-injected HTML */
+  .btn.small { padding: 6px 12px; font-size: 13px; }
   .btn.danger { background: #dc2626; padding: 6px 12px; font-size: 13px; }
   .btn.danger:hover { background: #b91c1c; }
-  .btn:disabled { opacity: 0.6; cursor: not-allowed; }
-  .btn.logout { background: #475569; padding: 6px 14px; font-size: 13px; }
-  .btn.logout:hover { background: #334155; }
-  .input { width: 100%; border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px 12px; font-size: 14px; outline: none; }
-  .input:focus { border-color: #2563eb; }
-  table { width: 100%; border-collapse: collapse; font-size: 14px; }
-  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #e2e8f0; }
-  th { color: #64748b; font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; }
-  .msg { padding: 10px 14px; border-radius: 8px; font-size: 14px; margin-bottom: 12px; display: none; }
-  .msg.show { display: block; }
-  .msg.ok { background: #dcfce7; color: #166534; }
-  .msg.err { background: #fee2e2; color: #991b1b; }
-  .dropzone { border: 2px dashed #cbd5e1; border-radius: 12px; padding: 40px; text-align: center; color: #64748b; cursor: pointer; transition: all 0.15s ease; }
-  .dropzone.drag { border-color: #2563eb; background: #eff6ff; }
-  .chat-row { padding: 12px 14px; border: 1px solid #e2e8f0; border-radius: 10px; margin-bottom: 10px; }
-  .chat-row .meta { font-size: 12px; color: #94a3b8; margin-bottom: 6px; }
-  .chat-row .line { margin: 4px 0; font-size: 14px; }
-  .chat-row .line .who { font-weight: 700; }
-  .chat-row .line.user .who { color: #2563eb; }
+  /* JS-generated rows */
+  .agent-row .name { font-weight: 700; font-size: 15px; color: #0BA39B; }
+  .agent-row .greet { color: #64748b; font-size: 13px; margin: 4px 0 8px; }
+  .chat-row .line.user .who { color: #0BA39B; }
   .chat-row .line.bot .who { color: #059669; }
-  .empty { color: #94a3b8; font-size: 14px; padding: 12px 0; }
-  .row-flex { display: flex; gap: 8px; align-items: center; }
   .key-value { font-family: Consolas, monospace; background: #f1f5f9; padding: 4px 8px; border-radius: 6px; font-size: 13px; word-break: break-all; }
 </style>
 </head>
-<body>
+<body class="bg-slate-100 text-charcoal">
 
-<header>
-  <h1>N2X Admin Panel</h1>
-  <div class="row-flex">
-    <a href="/">Back to site</a>
-    <button id="logoutBtn" class="btn logout">Logout</button>
+<header class="bg-charcoal text-white px-6 py-4 flex items-center justify-between shadow-lg">
+  <div class="flex items-center gap-3">
+    <div class="w-9 h-9 relative flex items-center justify-center rounded-xl bg-gradient-to-br from-brand to-cyan-500 text-white font-black text-xs shadow-lg shadow-cyan-500/20">
+      N2
+      <span class="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-gradient-to-tr from-teal-400 to-cyan-300 ring-2 ring-charcoal"></span>
+    </div>
+    <h1 class="text-lg font-extrabold tracking-tight">n2x<span class="text-brand">System</span> <span class="font-medium text-slate-400 text-sm">Admin Panel</span></h1>
+  </div>
+  <div class="flex items-center gap-3">
+    <a href="/" class="text-slate-300 hover:text-brand text-sm transition-colors">Back to site</a>
+    <button id="logoutBtn" class="rounded-full bg-slate-700 hover:bg-slate-600 px-4 py-1.5 text-sm font-semibold transition-colors">Logout</button>
   </div>
 </header>
 
-<div class="tabs">
-  <button class="tab active" data-tab="kb">Knowledge Base</button>
-  <button class="tab" data-tab="history">Chat History</button>
-  <button class="tab" data-tab="keys">API Keys</button>
+<div class="bg-white border-b border-slate-200 px-6 flex gap-2 overflow-x-auto" id="tabsBar">
+  <button class="tab active font-semibold py-3 px-5 text-sm whitespace-nowrap cursor-pointer" data-tab="agents" id="tab-agents">Agents</button>
+  <button class="tab font-semibold py-3 px-5 text-sm whitespace-nowrap cursor-pointer" data-tab="kb" id="tab-kb">Knowledge Base</button>
+  <button class="tab font-semibold py-3 px-5 text-sm whitespace-nowrap cursor-pointer" data-tab="history" id="tab-history">Chat History</button>
+  <button class="tab font-semibold py-3 px-5 text-sm whitespace-nowrap cursor-pointer" data-tab="keys" id="tab-keys">API Keys</button>
 </div>
 
-<main>
+<main class="max-w-5xl mx-auto px-6 py-6">
+
+  <!-- Agents -->
+  <section id="agents" class="panel active">
+    <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-200 mb-5">
+      <h2 id="agentFormTitle" class="text-lg font-bold text-brandDark mb-4">Create Agent</h2>
+      <input id="agentId" type="hidden" />
+      <label class="block text-sm font-semibold text-charcoal/80 mt-4 mb-2" for="agentName">Name</label>
+      <input id="agentName" class="w-full border border-slate-300 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20" placeholder="e.g. Sales Assistant" />
+      <label class="block text-sm font-semibold text-charcoal/80 mt-4 mb-2" for="agentGreeting">Greeting (pehla message jo visitor ko dikhega)</label>
+      <input id="agentGreeting" class="w-full border border-slate-300 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20" placeholder="Hello! Main aapki kaise madad kar sakta hoon?" />
+      <label class="block text-sm font-semibold text-charcoal/80 mt-4 mb-2" for="agentPrompt">Instructions / System Prompt</label>
+      <textarea id="agentPrompt" class="w-full border border-slate-300 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20 resize-y min-h-[120px] font-mono" placeholder="You are ... Follow these rules: ..."></textarea>
+      <div class="flex items-center gap-3 mt-5">
+        <button id="saveAgentBtn" class="rounded-xl bg-brand hover:bg-brandDark text-white font-semibold px-5 py-2.5 text-sm shadow-lg shadow-brand/30 transition-colors">Create Agent</button>
+        <button id="cancelAgentBtn" class="rounded-xl bg-slate-600 hover:bg-slate-500 text-white px-5 py-2.5 text-sm font-semibold transition-colors" style="display:none;">Cancel Edit</button>
+      </div>
+      <div id="agentMsg" class="msg"></div>
+    </div>
+    <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-200">
+      <h2 class="text-lg font-bold text-brandDark mb-4">Agents</h2>
+      <div id="agentsList"></div>
+      <div id="agentsEmpty" class="empty text-slate-400 text-sm py-3" style="display:none;">Abhi koi agent nahi banaya.</div>
+    </div>
+  </section>
 
   <!-- Knowledge Base -->
-  <section id="kb" class="panel active">
-    <div class="card">
-      <h2>Upload Document</h2>
-      <div id="dropzone" class="dropzone">Drag & drop PDF/TXT file yahan, ya click karke select karo</div>
+  <section id="kb" class="panel">
+    <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-200 mb-5">
+      <h2 class="text-lg font-bold text-brandDark mb-2">Knowledge Base Scope</h2>
+      <p class="text-slate-400 text-sm mb-4">Kis agent ki knowledge base manage karni hai? Har agent ka apna data hota hai. "General / Shared" ka data sab agents ko milta hai.</p>
+      <select id="kbAgentSel" class="w-full sm:w-72 border border-slate-300 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-brand bg-white">
+        <option value="">General / Shared</option>
+      </select>
+    </div>
+    <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-200 mb-5">
+      <h2 class="text-lg font-bold text-brandDark mb-4">Upload Document</h2>
+      <div id="dropzone" class="border-2 border-dashed border-slate-300 rounded-xl p-10 text-center text-slate-500 text-sm cursor-pointer transition hover:border-brand hover:bg-brand/5">Drag & drop PDF/TXT file yahan, ya click karke select karo</div>
       <div id="uploadMsg" class="msg"></div>
     </div>
-    <div class="card">
-      <h2>Uploaded Documents</h2>
-      <table>
-        <thead><tr><th>Filename</th><th>Size</th><th></th></tr></thead>
+    <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-200">
+      <h2 class="text-lg font-bold text-brandDark mb-4">Uploaded Documents</h2>
+      <table class="w-full text-sm">
+        <thead class="text-slate-400 text-left uppercase text-xs tracking-wide">
+          <tr><th class="py-2 pr-4">Filename</th><th class="py-2 pr-4">Size</th><th class="py-2"></th></tr>
+        </thead>
         <tbody id="docsBody"></tbody>
       </table>
-      <div id="docsEmpty" class="empty" style="display:none;">Koi document upload nahi hua.</div>
+      <div id="docsEmpty" class="empty text-slate-400 text-sm py-3" style="display:none;">Is scope mein koi document upload nahi hua.</div>
     </div>
   </section>
 
   <!-- Chat History -->
   <section id="history" class="panel">
-    <div class="card">
-      <h2>Conversations</h2>
+    <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-200">
+      <h2 class="text-lg font-bold text-brandDark mb-4">Conversations</h2>
       <div id="convBody"></div>
     </div>
   </section>
 
   <!-- API Keys -->
   <section id="keys" class="panel">
-    <div class="card">
-      <h2>Generate API Key</h2>
-      <div class="row-flex">
-        <input id="keyLabel" class="input" placeholder="Client ka naam (label)" />
-        <button id="genKeyBtn" class="btn">Generate</button>
+    <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-200 mb-5">
+      <h2 class="text-lg font-bold text-brandDark mb-4">Generate API Key</h2>
+      <div class="flex gap-3 items-center">
+        <input id="keyLabel" class="flex-1 border border-slate-300 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20" placeholder="Client ka naam (label)" />
+        <button id="genKeyBtn" class="rounded-xl bg-brand hover:bg-brandDark text-white font-semibold px-5 py-2.5 text-sm shadow-lg shadow-brand/30 transition-colors">Generate</button>
       </div>
       <div id="keyMsg" class="msg"></div>
     </div>
-    <div class="card">
-      <h2>Existing Keys</h2>
-      <table>
-        <thead><tr><th>ID</th><th>API Key</th><th>Label</th><th>Created</th><th></th></tr></thead>
+    <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-200">
+      <h2 class="text-lg font-bold text-brandDark mb-4">Existing Keys</h2>
+      <table class="w-full text-sm">
+        <thead class="text-slate-400 text-left uppercase text-xs tracking-wide">
+          <tr><th class="py-2 pr-4">ID</th><th class="py-2 pr-4">API Key</th><th class="py-2 pr-4">Label</th><th class="py-2 pr-4">Created</th><th class="py-2"></th></tr>
+        </thead>
         <tbody id="keysBody"></tbody>
       </table>
-      <div id="keysEmpty" class="empty" style="display:none;">Abhi koi API key nahi banai.</div>
+      <div id="keysEmpty" class="empty text-slate-400 text-sm py-3" style="display:none;">Abhi koi API key nahi banai.</div>
     </div>
   </section>
 
 </main>
+
+<style>
+  /* Styles referenced by JS-generated markup */
+  .line.user .who { color: #0BA39B; }
+  .line.bot .who { color: #059669; }
+  .who { font-weight: 700; }
+  .chat-row, .agent-row { border: 1px solid #e2e8f0; border-radius: 12px; padding: 12px 14px; margin-bottom: 10px; background: #fff; }
+</style>
 
 <script>
   const API_BASE = "";
@@ -121,9 +168,9 @@
       document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
       document.querySelectorAll(".panel").forEach((p) => p.classList.remove("active"));
       tab.classList.add("active");
-      $("kb").classList.toggle("active", tab.dataset.tab === "kb");
-      $("history").classList.toggle("active", tab.dataset.tab === "history");
-      $("keys").classList.toggle("active", tab.dataset.tab === "keys");
+      $(tab.dataset.tab).classList.add("active");
+      if (tab.dataset.tab === "agents") loadAgents();
+      if (tab.dataset.tab === "kb") loadDocuments();
       if (tab.dataset.tab === "history") loadConversations();
       if (tab.dataset.tab === "keys") loadKeys();
     });
@@ -161,6 +208,113 @@
   }
   checkAuth();
 
+  // ---------- Agents ----------
+
+  async function loadAgents() {
+    try {
+      const agents = await api("/agents");
+      const body = $("agentsList");
+      body.innerHTML = "";
+      $("agentsEmpty").style.display = agents.length ? "none" : "block";
+
+      const sel = $("kbAgentSel");
+      const prevValue = sel.value;
+      sel.innerHTML = '<option value="">General / Shared</option>';
+      agents.forEach((a) => {
+        const opt = document.createElement("option");
+        opt.value = a.id;
+        opt.textContent = a.name;
+        sel.appendChild(opt);
+        const row = document.createElement("div");
+        row.className = "agent-row";
+        row.innerHTML = `
+          <div class="name">${a.name}</div>
+          <div class="greet">Greeting: ${a.greeting || "—"}</div>
+          <div class="flex items-center gap-3">
+            <button class="bg-brand hover:bg-brandDark text-white rounded-lg px-3 py-1.5 text-xs font-semibold">Edit</button>
+            <button class="btn danger text-white rounded-lg px-3 py-1.5">Delete</button>
+          </div>`;
+        row.querySelectorAll("button")[0].onclick = async () => {
+          try {
+            const detail = await api("/agents/" + a.id);
+            startEditAgent(detail);
+          } catch (err) { alert(err.message); }
+        };
+        row.querySelectorAll("button")[1].onclick = async () => {
+          if (!confirm("Agent '" + a.name + "' delete karna hai? Iska sara knowledge base bhi delete ho jayega.")) return;
+          try {
+            await api("/agents/" + a.id, { method: "DELETE" });
+            if ($("kbAgentSel").value === String(a.id)) $("kbAgentSel").value = "";
+            loadAgents();
+          } catch (err) { alert(err.message); }
+        };
+        body.appendChild(row);
+      });
+      if ([...sel.options].some((o) => o.value === prevValue)) sel.value = prevValue;
+    } catch (err) {
+      $("agentsEmpty").style.display = "block";
+      $("agentsEmpty").textContent = "Error loading agents: " + err.message;
+    }
+  }
+
+  function startEditAgent(agent) {
+    $("agentId").value = agent.id;
+    $("agentName").value = agent.name;
+    $("agentGreeting").value = agent.greeting || "";
+    $("agentPrompt").value = agent.system_prompt || "";
+    $("agentFormTitle").textContent = "Edit Agent — " + agent.name;
+    $("saveAgentBtn").textContent = "Save Changes";
+    $("cancelAgentBtn").style.display = "";
+  }
+
+  function resetAgentForm() {
+    $("agentId").value = "";
+    $("agentName").value = "";
+    $("agentGreeting").value = "";
+    $("agentPrompt").value = "";
+    $("agentFormTitle").textContent = "Create Agent";
+    $("saveAgentBtn").textContent = "Create Agent";
+    $("cancelAgentBtn").style.display = "none";
+  }
+
+  $("cancelAgentBtn").onclick = resetAgentForm;
+
+  $("saveAgentBtn").onclick = async () => {
+    const id = $("agentId").value;
+    const name = $("agentName").value.trim();
+    const greeting = $("agentGreeting").value.trim();
+    const system_prompt = $("agentPrompt").value.trim();
+    if (!name) {
+      showMsg($("agentMsg"), "Pehle agent ka naam likho.", "err");
+      return;
+    }
+    if (!system_prompt) {
+      showMsg($("agentMsg"), "Agent ke liye instructions/system prompt likho.", "err");
+      return;
+    }
+    try {
+      if (id) {
+        await api("/agents/" + id, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, greeting, system_prompt }),
+        });
+        showMsg($("agentMsg"), "Agent update ho gaya.", "ok");
+      } else {
+        await api("/agents", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, greeting, system_prompt }),
+        });
+        showMsg($("agentMsg"), "Agent ban gaya.", "ok");
+      }
+      resetAgentForm();
+      loadAgents();
+    } catch (err) {
+      showMsg($("agentMsg"), err.message, "err");
+    }
+  };
+
   // ---------- Knowledge Base ----------
 
   const dropzone = $("dropzone");
@@ -182,6 +336,8 @@
     if (file) uploadFile(file);
   });
 
+  $("kbAgentSel").addEventListener("change", loadDocuments);
+
   async function uploadFile(file) {
     if (!file) return;
     if (!/\.(pdf|txt)$/i.test(file.name)) {
@@ -190,6 +346,8 @@
     }
     const formData = new FormData();
     formData.append("file", file);
+    const scope = $("kbAgentSel").value;
+    if (scope) formData.append("agent_id", scope);
     try {
       const data = await api("/upload", { method: "POST", body: formData });
       showMsg($("uploadMsg"), data.message + " (" + data.chunks_created + " chunks)", "ok");
@@ -201,18 +359,21 @@
 
   async function loadDocuments() {
     try {
-      const docs = await api("/documents");
+      const scope = $("kbAgentSel").value;
+      const url = scope ? "/documents?agent_id=" + scope : "/documents";
+      const docs = await api(url);
       const body = $("docsBody");
       body.innerHTML = "";
       $("docsEmpty").style.display = docs.length ? "none" : "block";
       docs.forEach((d) => {
         const tr = document.createElement("tr");
         const size = d.size > 1024 ? (d.size / 1024).toFixed(1) + " KB" : d.size + " B";
-        tr.innerHTML = `<td>${d.filename}</td><td>${size}</td>
-          <td><button class="btn danger">Delete</button></td>`;
+        tr.innerHTML = `<td class="py-2 pr-4">${d.filename}</td><td class="py-2 pr-4">${size}</td>
+          <td class="py-2"><button class="btn danger text-white rounded-lg px-3 py-1.5">Delete</button></td>`;
         tr.querySelector("button").onclick = async () => {
           try {
-            await api("/documents/" + encodeURIComponent(d.filename), { method: "DELETE" });
+            const delUrl = scope ? "/documents/" + encodeURIComponent(d.filename) + "?agent_id=" + scope : "/documents/" + encodeURIComponent(d.filename);
+            await api(delUrl, { method: "DELETE" });
             loadDocuments();
           } catch (err) { alert(err.message); }
         };
@@ -237,24 +398,24 @@
       body.innerHTML = "";
       const sessions = Object.keys(bySession);
       if (!sessions.length) {
-        body.innerHTML = '<div class="empty">Abhi koi conversation nahi hai.</div>';
+        body.innerHTML = '<div class="text-slate-400 text-sm py-3">Abhi koi conversation nahi hai.</div>';
         return;
       }
       sessions.forEach((sid) => {
         const wrap = document.createElement("div");
-        wrap.className = "chat-row";
+        wrap.className = "chat-row p-3.5 border border-slate-200 rounded-xl mb-3";
         const first = bySession[sid][0];
-        wrap.innerHTML = `<div class="meta">${sid} &middot; started ${first.created_at}</div>`;
+        wrap.innerHTML = `<div class="text-xs text-slate-400 mb-1.5">${sid} &middot; started ${first.created_at}</div>`;
         bySession[sid].forEach((r) => {
           const line = document.createElement("div");
-          line.className = "line " + r.role;
+          line.className = "line " + r.role + " my-1 text-sm";
           line.innerHTML = `<span class="who">${r.role === "user" ? "User:" : "Bot:"}</span> ${r.content}`;
           wrap.appendChild(line);
         });
         body.appendChild(wrap);
       });
     } catch (err) {
-      $("convBody").innerHTML = '<div class="empty">Error loading history: ' + err.message + "</div>";
+      $("convBody").innerHTML = '<div class="text-slate-400 text-sm py-3">Error loading history: ' + err.message + "</div>";
     }
   }
 
@@ -288,9 +449,9 @@
       $("keysEmpty").style.display = keys.length ? "none" : "block";
       keys.forEach((k) => {
         const tr = document.createElement("tr");
-        tr.innerHTML = `<td>${k.id}</td><td class="key-value">${k.api_key}</td>
-          <td>${k.label}</td><td>${k.created_at}</td>
-          <td><button class="btn danger">Delete</button></td>`;
+        tr.innerHTML = `<td class="py-2 pr-4">${k.id}</td><td class="key-value py-2 pr-4">${k.api_key}</td>
+          <td class="py-2 pr-4">${k.label}</td><td class="py-2 pr-4">${k.created_at}</td>
+          <td class="py-2"><button class="btn danger text-white rounded-lg px-3 py-1.5">Delete</button></td>`;
         tr.querySelector("button").onclick = async () => {
           try {
             await api("/api-keys/" + k.id, { method: "DELETE" });
@@ -305,6 +466,7 @@
     }
   }
 
+  loadAgents();
   loadDocuments();
 </script>
 </body>

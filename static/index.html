@@ -1,13 +1,338 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-<meta http-equiv="Pragma" content="no-cache">
-<title>N2X Chat Assistant</title>
-<script src="/static/widget.js"></script>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <title>N2X System — Digital Products Agency</title>
+    <meta name="description" content="We build digital products that look premium & perform fast. Websites, mobile apps, dashboards, APIs, cloud workflows & product design." />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'Poppins', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+                    },
+                    colors: {
+                        brand: '#00C2B8',
+                        brandDark: '#0BA39B',
+                        charcoal: '#1A1A1A',
+                        slate: '#64748B',
+                    },
+                },
+            },
+        };
+    </script>
 </head>
-<body>
+<body class="font-sans bg-white text-slate antialiased">
+
+    <!-- ========== NAVIGATION ========== -->
+    <header class="fixed top-0 inset-x-0 z-50 bg-white/80 backdrop-blur-md border-b border-slate-200/60">
+        <nav class="max-w-7xl mx-auto flex items-center justify-between px-6 py-4">
+            <!-- Logo -->
+            <a href="#home" class="flex items-center gap-3">
+                <div class="w-10 h-10 relative flex items-center justify-center rounded-2xl bg-gradient-to-br from-brand to-cyan-500 text-white font-black text-xs shadow-lg shadow-cyan-500/20">
+                    N2
+                    <span class="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-gradient-to-tr from-teal-400 to-cyan-300 ring-2 ring-white"></span>
+                </div>
+                <span class="text-lg font-extrabold tracking-tight text-charcoal">n2x<span class="text-brand">System</span></span>
+            </a>
+
+            <!-- Center Links -->
+            <ul class="hidden lg:flex items-center gap-8 text-sm font-medium">
+                <li><a href="#home" class="text-slate hover:text-brand transition-colors">Home</a></li>
+                <li>
+                    <a href="#services" class="text-slate hover:text-brand flex items-center gap-1 transition-colors">
+                        Services
+                        <svg class="w-3.5 h-3.5 opacity-60" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
+                        </svg>
+                    </a>
+                </li>
+                <li>
+                    <a href="#projects" class="text-charcoal font-semibold relative pb-1 transition-colors">
+                        Projects
+                        <span class="absolute -bottom-px left-0 w-full h-0.5 rounded-full bg-brand"></span>
+                    </a>
+                </li>
+                <li><a href="#about" class="text-slate hover:text-brand transition-colors">About</a></li>
+                <li><a href="#careers" class="text-slate hover:text-brand transition-colors">Careers</a></li>
+                <li><a href="#contact" class="text-slate hover:text-brand transition-colors">Contact</a></li>
+            </ul>
+
+            <!-- CTA Button -->
+            <a href="#contact" class="hidden sm:inline-block rounded-full bg-brand text-white px-6 py-2 text-sm font-semibold shadow-lg shadow-brand/30 hover:bg-teal-500 hover:shadow-cyan-500/40 transition-colors">
+                Get a Quote
+            </a>
+        </nav>
+    </header>
+
+    <!-- ========== HERO ========== -->
+    <section id="home" class="relative overflow-hidden pt-40 pb-24">
+        <!-- Background grid pattern -->
+        <div class="absolute inset-0 opacity-[0.06]"
+             style="background-image: linear-gradient(to right, #1A1A1A 1px, transparent 1px), linear-gradient(to bottom, #1A1A1A 1px, transparent 1px); background-size: 64px 64px;">
+        </div>
+        <!-- Soft teal/cyan blurred gradient overlay -->
+        <div class="absolute -top-32 -left-32 w-[600px] h-[600px] rounded-full bg-cyan-300/40 blur-3xl"></div>
+        <div class="absolute top-20 -right-40 w-[640px] h-[640px] rounded-full bg-teal-300/30 blur-3xl"></div>
+        <div class="absolute bottom-0 left-1/3 w-[480px] h-[480px] rounded-full bg-cyan-200/30 blur-3xl"></div>
+
+        <div class="relative max-w-6xl mx-auto px-6 text-center">
+            <!-- Badge -->
+            <div class="inline-flex items-center gap-2 px-5 py-2 rounded-full border border-brand/40 bg-brand/10 text-sm font-medium text-teal-700 mb-8">
+                🚀 n2xSystem Project Showcase
+            </div>
+
+            <!-- H1 -->
+            <h1 class="text-4xl md:text-6xl lg:text-7xl font-black text-charcoal leading-[1.05] tracking-tight max-w-4xl mx-auto">
+                We Build Digital Products That
+                <span class="text-transparent bg-clip-text bg-gradient-to-r from-teal-500 to-cyan-500">Look Premium</span>
+                &amp; Perform Fast.
+            </h1>
+
+            <!-- Subtext -->
+            <p class="mt-8 max-w-2xl mx-auto text-lg md:text-xl text-slate leading-relaxed">
+                From high-end websites and mobile apps to dashboards, APIs, cloud workflows and product design —
+                our projects are engineered for speed, scalability and business impact.
+            </p>
+        </div>
+    </section>
+
+    <!-- ========== SERVICES ========== -->
+    <section id="services" class="relative scroll-mt-24 py-16 px-6">
+        <div class="max-w-6xl mx-auto text-center mb-12">
+            <h2 class="text-3xl md:text-4xl font-black text-charcoal tracking-tight">What We Do</h2>
+            <p class="mt-4 max-w-2xl mx-auto text-lg text-slate">End-to-end digital product engineering under one roof — from idea to launch to scale.</p>
+        </div>
+        <div class="max-w-6xl mx-auto grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+            <div class="bg-white rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all p-8">
+                <div class="w-12 h-12 rounded-xl bg-brand/10 text-brand flex items-center justify-center mb-4">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.75 3v2.25M15 3v2.25M5.25 8.25h13.5m-15 11.25h16.5a1.5 1.5 0 001.5-1.5V6.75a1.5 1.5 0 00-1.5-1.5H4.5a1.5 1.5 0 00-1.5 1.5V18a1.5 1.5 0 001.5 1.5z"/></svg>
+                </div>
+                <h3 class="text-lg font-bold text-charcoal mb-2">AI Development</h3>
+                <p class="text-sm text-slate leading-relaxed">Agentic systems, LLM integrations and intelligent automation built for the future.</p>
+            </div>
+            <div class="bg-white rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all p-8">
+                <div class="w-12 h-12 rounded-xl bg-brand/10 text-brand flex items-center justify-center mb-4">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10.5 1.5H8.25A2.25 2.25 0 006 3.75v16.5a2.25 2.25 0 002.25 2.25h7.5A2.25 2.25 0 0018 20.25V3.75a2.25 2.25 0 00-2.25-2.25H13.5m-3 0V3h3V1.5m-3 0h3m-3 18.75h3"/></svg>
+                </div>
+                <h3 class="text-lg font-bold text-charcoal mb-2">Mobile Apps</h3>
+                <p class="text-sm text-slate leading-relaxed">Fast, beautiful iOS &amp; Android apps with buttery-smooth user experiences.</p>
+            </div>
+            <div class="bg-white rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all p-8">
+                <div class="w-12 h-12 rounded-xl bg-brand/10 text-brand flex items-center justify-center mb-4">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 21a9.004 9.004 0 008.716-6.747M12 21a2.25 2.25 0 01-2.164-1.502M12 21c-.487 0-.943-.132-1.336-.36M21 12a9 9 0 11-18 0"/>
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 21a9 9 0 010-18m0 0a7 7 0 017 7"/></svg>
+                </div>
+                <h3 class="text-lg font-bold text-charcoal mb-2">Web Development</h3>
+                <p class="text-sm text-slate leading-relaxed">High-performance websites and dashboards engineered for speed and scale.</p>
+            </div>
+            <div class="bg-white rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all p-8">
+                <div class="w-12 h-12 rounded-xl bg-brand/10 text-brand flex items-center justify-center mb-4">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456z"/></svg>
+                </div>
+                <h3 class="text-lg font-bold text-charcoal mb-2">UI/UX Design</h3>
+                <p class="text-sm text-slate leading-relaxed">Clean, premium interfaces crafted around user behaviour and business goals.</p>
+            </div>
+            <div class="bg-white rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all p-8">
+                <div class="w-12 h-12 rounded-xl bg-brand/10 text-brand flex items-center justify-center mb-4">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M20.25 8.511c.884.284 1.5 1.128 1.5 2.097v4.286c0 1.136-.847 2.1-1.98 2.193-.34.027-.68.052-1.02.072v3.091l-3-3c-1.354 0-2.694-.055-4.02-.163a2.115 2.115 0 01-.825-.242m9.345-8.334a2.126 2.126 0 00-.476-.095 48.64 48.64 0 00-8.048 0c-1.131.094-1.976 1.057-1.976 2.192v4.286c0 .837.46 1.58 1.155 1.951m9.345-8.334V6.637c0-1.621-1.152-3.026-2.76-3.235A48.455 48.455 0 0011.25 3c-2.115 0-4.198.137-6.24.402-1.608.209-2.76 1.614-2.76 3.235v6.226c0 1.621 1.152 3.026 2.76 3.235.577.075 1.157.14 1.74.194V21l4.155-4.155"/></svg>
+                </div>
+                <h3 class="text-lg font-bold text-charcoal mb-2">ChatGPT Integrations</h3>
+                <p class="text-sm text-slate leading-relaxed">Custom assistants and knowledge bots wired directly into your products.</p>
+            </div>
+            <div class="bg-white rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all p-8">
+                <div class="w-12 h-12 rounded-xl bg-brand/10 text-brand flex items-center justify-center mb-4">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z"/></svg>
+                </div>
+                <h3 class="text-lg font-bold text-charcoal mb-2">Digital Marketing</h3>
+                <p class="text-sm text-slate leading-relaxed">Growth campaigns that turn quality traffic into revenue.</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- ========== STATS ========== -->
+    <section id="about" class="relative scroll-mt-24 pb-16 px-6">
+        <div class="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div class="bg-white rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all p-8 text-center">
+                <div class="text-5xl font-black text-brand tracking-tight">200+</div>
+                <div class="mt-3 text-sm font-semibold tracking-widest text-charcoal/70 uppercase">Projects Delivered</div>
+            </div>
+            <div class="bg-white rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all p-8 text-center">
+                <div class="text-5xl font-black text-brand tracking-tight">99.9%</div>
+                <div class="mt-3 text-sm font-semibold tracking-widest text-charcoal/70 uppercase">Reliable Delivery</div>
+            </div>
+            <div class="bg-white rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all p-8 text-center">
+                <div class="text-5xl font-black text-brand tracking-tight">24/7</div>
+                <div class="mt-3 text-sm font-semibold tracking-widest text-charcoal/70 uppercase">Client Support</div>
+            </div>
+        </div>
+        <div class="max-w-4xl mx-auto mt-14 text-center">
+            <h2 class="text-2xl md:text-3xl font-black text-charcoal tracking-tight">About N2X System</h2>
+            <p class="mt-4 text-lg text-slate leading-relaxed">
+                N2X System is a modern software agency combining AI &amp; agentic systems with premium product
+                engineering. We partner with founders and enterprises in Lahore and London to ship products
+                that feel effortless and perform at scale.
+            </p>
+        </div>
+    </section>
+
+    <!-- ========== ACTION CTA ========== -->
+    <section id="careers" class="scroll-mt-24 py-14 px-6">
+        <div class="text-center">
+            <a href="/portfolio" class="inline-block rounded-full p-[2px] bg-gradient-to-r from-brand via-cyan-400 to-teal-500 shadow-lg shadow-cyan-500/20 hover:shadow-cyan-500/40 hover:scale-105 transition-all">
+                <span class="block rounded-full bg-white text-brand px-8 py-3 text-sm font-semibold hover:bg-transparent hover:text-white">
+                    Download Portfolio
+                </span>
+            </a>
+            <p class="mt-8 max-w-xl mx-auto text-slate">
+                Join us — we're always looking for sharp engineers and designers.
+                Drop your CV at <a class="text-brand font-semibold hover:text-teal-600" href="mailto:info@n2xsystem.com">info@n2xsystem.com</a>.
+            </p>
+        </div>
+    </section>
+
+    <!-- ========== PROJECTS / SHOWCASE ========== -->
+    <section id="projects" class="scroll-mt-24 py-20 px-6 bg-gradient-to-b from-white to-teal-50/40">
+        <div class="max-w-4xl mx-auto text-center">
+            <h2 class="text-3xl md:text-5xl font-black text-charcoal tracking-tight">N2X Digital Experiences</h2>
+            <p class="mt-5 text-lg text-slate leading-relaxed max-w-2xl mx-auto">
+                Scroll to explore — each project is a real product crafted with clean design, smooth
+                interactions and a relentless focus on outcomes.
+            </p>
+            <div class="mt-10 grid grid-cols-1 sm:grid-cols-2 gap-6 text-left">
+                <div class="bg-white rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-xl transition-all overflow-hidden">
+                    <div class="h-40 bg-gradient-to-br from-brand/30 to-cyan-200/40 flex items-center justify-center">
+                        <span class="font-black text-5xl text-brand/70">AI</span>
+                    </div>
+                    <div class="p-6">
+                        <h3 class="font-bold text-charcoal">N2X Knowledge Chatbot</h3>
+                        <p class="text-sm text-slate mt-2 leading-relaxed">Agentic support bot with a custom knowledge base, multi-agent routing and an admin panel with analytics.</p>
+                    </div>
+                </div>
+                <div class="bg-white rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-xl transition-all overflow-hidden">
+                    <div class="h-40 bg-gradient-to-br from-teal-400/40 to-cyan-300/40 flex items-center justify-center">
+                        <span class="font-black text-5xl text-brand/70">UI</span>
+                    </div>
+                    <div class="p-6">
+                        <h3 class="font-bold text-charcoal">Premium Product UI</h3>
+                        <p class="text-sm text-slate mt-2 leading-relaxed">High-end interfaces built with clean design systems and buttery-smooth interaction detail.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ========== FOOTER ========== -->
+    <footer id="contact" class="scroll-mt-24 bg-charcoal text-slate-400">
+        <div class="max-w-7xl mx-auto px-6 pt-16 pb-8">
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-12">
+
+                <!-- Col 1: Brand -->
+                <div>
+                    <div class="flex items-center gap-3 mb-5">
+                        <div class="w-10 h-10 relative flex items-center justify-center rounded-2xl bg-gradient-to-br from-brand to-cyan-500 text-white font-black text-xs shadow-lg shadow-cyan-500/20">
+                            N2
+                            <span class="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-gradient-to-tr from-teal-400 to-cyan-300 ring-2 ring-charcoal"></span>
+                        </div>
+                        <span class="text-lg font-extrabold tracking-tight text-white">n2x<span class="text-brand">System</span></span>
+                    </div>
+                    <p class="text-sm leading-relaxed mb-6">
+                        Innovating the future with AI &amp; Agentic Systems — building premium digital products that perform.
+                    </p>
+                    <!-- Social icons -->
+                    <div class="flex items-center gap-3">
+                        <a href="#" aria-label="Instagram" class="w-10 h-10 rounded-full border border-slate-700 flex items-center justify-center text-slate-400 hover:text-white hover:border-brand hover:bg-brand transition-colors">
+                            <svg class="w-4.5 h-4.5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2.2c3.2 0 3.6 0 4.9.1 1.2.1 1.8.2 2.2.4.6.2 1 .5 1.4.9.4.4.7.8.9 1.4.2.4.4 1 .4 2.2.1 1.3.1 1.7.1 4.9s0 3.6-.1 4.9c-.1 1.2-.2 1.8-.4 2.2-.2.6-.5 1-.9 1.4-.4.4-.8.7-1.4.9-.4.2-1 .4-2.2.4-1.3.1-1.7.1-4.9.1s-3.6 0-4.9-.1c-1.2-.1-1.8-.2-2.2-.4-.6-.2-1-.5-1.4-.9-.4-.4-.7-.8-.9-1.4-.2-.4-.4-1-.4-2.2-.1-1.3-.1-1.7-.1-4.9s0-3.6.1-4.9c.1-1.2.2-1.8.4-2.2.2-.6.5-1 .9-1.4.4-.4.8-.7 1.4-.9.4-.2 1-.4 2.2-.4 1.3-.1 1.7-.1 4.9-.1zm0 2c-3.1 0-3.5 0-4.7.1-1.1.1-1.5.2-1.8.3-.5.2-.8.4-1.1.7-.3.3-.5.6-.7 1.1-.1.3-.2.7-.3 1.8-.1 1.2-.1 1.6-.1 4.7s0 3.5.1 4.7c.1 1.1.2 1.5.3 1.8.2.5.4.8.7 1.1.3.3.6.5 1.1.7.3.1.7.2 1.8.3 1.2.1 1.6.1 4.7.1s3.5 0 4.7-.1c1.1-.1 1.5-.2 1.8-.3.5-.2.8-.4 1.1-.7.3-.3.5-.6.7-1.1.1-.3.2-.7.3-1.8.1-1.2.1-1.6.1-4.7s0-3.5-.1-4.7c-.1-1.1-.2-1.5-.3-1.8-.2-.5-.4-.8-.7-1.1-.3-.3-.6-.5-1.1-.7-.3-.1-.7-.2-1.8-.3-1.2-.1-1.6-.1-4.7-.1zm0 3.4a5.4 5.4 0 110 10.8 5.4 5.4 0 010-10.8zm0 8.9a3.5 3.5 0 100-7 3.5 3.5 0 000 7zm6.8-9.1a1.3 1.3 0 11-2.5 0 1.3 1.3 0 012.5 0z"/></svg>
+                        </a>
+                        <a href="#" aria-label="LinkedIn" class="w-10 h-10 rounded-full border border-slate-700 flex items-center justify-center text-slate-400 hover:text-white hover:border-brand hover:bg-brand transition-colors">
+                            <svg class="w-4.5 h-4.5" fill="currentColor" viewBox="0 0 24 24"><path d="M4.98 3.5A2.49 2.49 0 112.5 6a2.49 2.49 0 012.48-2.5zM2.5 8.5h5V21h-5zM9 8.5h4.8v1.7h.1c.7-1.3 2.3-2.6 4.8-2.6 5.1 0 6 .3 6 4V21h-5v-7.5c0-1.8 0-4.1-2.5-4.1s-2.9 2-2.9 4V21H9z"/></svg>
+                        </a>
+                        <a href="#" aria-label="Facebook" class="w-10 h-10 rounded-full border border-slate-700 flex items-center justify-center text-slate-400 hover:text-white hover:border-brand hover:bg-brand transition-colors">
+                            <svg class="w-4.5 h-4.5" fill="currentColor" viewBox="0 0 24 24"><path d="M22 12a10 10 0 10-11.6 9.9v-7h-2.7V12h2.7V9.9c0-2.7 1.6-4.2 4-4.2 1.2 0 2.4.2 2.4.2v2.6h-1.3c-1.3 0-1.7.8-1.7 1.7V12h2.9l-.5 2.9h-2.4v7A10 10 0 0022 12z"/></svg>
+                        </a>
+                    </div>
+                </div>
+
+                <!-- Col 2: Services -->
+                <div>
+                    <h4 class="text-white font-semibold tracking-wide text-sm uppercase mb-5">Services</h4>
+                    <ul class="space-y-3 text-sm">
+                        <li><a href="#services" class="hover:text-brand transition-colors">AI Development</a></li>
+                        <li><a href="#services" class="hover:text-brand transition-colors">Mobile Apps</a></li>
+                        <li><a href="#services" class="hover:text-brand transition-colors">Web Dev</a></li>
+                        <li><a href="#services" class="hover:text-brand transition-colors">UI/UX</a></li>
+                        <li><a href="#services" class="hover:text-brand transition-colors">ChatGPT Integrations</a></li>
+                        <li><a href="#services" class="hover:text-brand transition-colors">Digital Marketing</a></li>
+                    </ul>
+                </div>
+
+                <!-- Col 3: Company -->
+                <div>
+                    <h4 class="text-white font-semibold tracking-wide text-sm uppercase mb-5">Company</h4>
+                    <ul class="space-y-3 text-sm">
+                        <li><a href="#home" class="hover:text-brand transition-colors">Home</a></li>
+                        <li><a href="#about" class="hover:text-brand transition-colors">About Us</a></li>
+                        <li><a href="#projects" class="hover:text-brand transition-colors">Projects</a></li>
+                        <li><a href="#careers" class="hover:text-brand transition-colors">Careers</a></li>
+                        <li><a href="#contact" class="hover:text-brand transition-colors">Contact</a></li>
+                    </ul>
+                </div>
+
+                <!-- Col 4: Get in Touch -->
+                <div>
+                    <h4 class="text-white font-semibold tracking-wide text-sm uppercase mb-5">Get in Touch</h4>
+                    <ul class="space-y-4 text-sm">
+                        <li class="flex items-start gap-3">
+                            <span class="mt-0.5 text-brand">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75"/></svg>
+                            </span>
+                            <a href="mailto:info@n2xsystem.com" class="hover:text-brand transition-colors">info@n2xsystem.com</a>
+                        </li>
+                        <li class="flex items-start gap-3">
+                            <span class="mt-0.5 text-brand">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 10.5a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 10.5c0 7.142-7.5 11.25-7.5 11.25S4.5 17.642 4.5 10.5a7.5 7.5 0 1115 0z"/></svg>
+                            </span>
+                            <span>Lahore, Punjab, Pakistan</span>
+                        </li>
+                        <li class="flex items-start gap-3">
+                            <span class="mt-0.5 text-brand">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 10.5a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 10.5c0 7.142-7.5 11.25-7.5 11.25S4.5 17.642 4.5 10.5a7.5 7.5 0 1115 0z"/></svg>
+                            </span>
+                            <span>London, United Kingdom</span>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <!-- ========== BOTTOM BAR ========== -->
+        <div class="border-t border-slate-800">
+            <div class="max-w-7xl mx-auto px-6 py-6 flex flex-col md:flex-row items-center justify-between gap-4 text-xs text-slate-500">
+                <p>© 2026 n2xSystem. All rights reserved.</p>
+                <div class="flex items-center gap-6">
+                    <a href="#" class="hover:text-brand transition-colors">Privacy Policy</a>
+                    <a href="#" class="hover:text-brand transition-colors">Terms of Service</a>
+                    <a href="/admin" class="hover:text-brand transition-colors">Admin</a>
+                </div>
+                <a href="#home" class="flex items-center gap-1.5 text-brand font-medium hover:text-teal-400 transition-colors">
+                    Back to top
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 15l7-7 7 7"/></svg>
+                </a>
+            </div>
+        </div>
+    </footer>
+
+    <!-- Chat widget config + script (served by backend) -->
+    <script>
+        window.N2XChatConfig = { apiBase: "" };
+    </script>
+    <script src="/static/widget.js?v=3"></script>
 </body>
 </html>

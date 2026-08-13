@@ -12,9 +12,11 @@ This report is a complete, self-contained description of the `knowledge-chatbot`
 
 **Key capabilities:**
 - Chat widget (embeddable in any page) that talks to a FastAPI backend.
-- Upload PDF/TXT documents; they are chunked, embedded, and stored in a Qdrant vector database.
-- On each question, the backend embeds the query, searches Qdrant for the 3 most similar text chunks, and sends them as context to a Groq-hosted LLM (Llama 3.3 70B) which writes the final answer.
-- Admin panel with login, document upload/delete, chat history viewer, and API-key management.
+- **Multiple AI agents:** an admin can create/edit/delete any number of agents, each with its own **name**, **greeting**, **instructions (system prompt)**, and **separate knowledge base**. A default "N2X Assistant" agent is seeded on first run.
+- **Agent picker in the widget:** visitors can switch between agents via a dropdown in the chat header; each agent uses its own prompt and its own documents.
+- Upload PDF/TXT documents; they are chunked, embedded, and stored in a Qdrant vector database. Documents can be scoped to a specific agent or to the shared/general knowledge base (which all agents also see).
+- On each question, the backend embeds the query, searches Qdrant for the 3 most similar text chunks (shared + that agent's own), and sends them as context to a Groq-hosted LLM (Llama 3.3 70B) which writes the final answer using the selected agent's system prompt.
+- Admin panel with login, agent management, document upload/delete (per agent), chat history viewer, and API-key management.
 
 ---
 
@@ -32,7 +34,7 @@ This report is a complete, self-contained description of the `knowledge-chatbot`
 | Config         | `.env` file via `python-dotenv`                        |
 | Frontend       | Plain HTML/CSS/JS (no framework), served as static files |
 
-**Note:** The embedding model is downloaded locally and runs on the same machine as the server (requires the model weights, ~90 MB). Qdrant and Groq are external services accessed over the network.
+**Note:** The embedding model is downloaded locally and runs on the same machine as the server (requires the model weights, ~90 MB). Qdrant and Groq are external services accessed over the network. No LangChain or other agent framework is used — the RAG pipeline is hand-written.
 
 ---
 
@@ -50,32 +52,33 @@ knowledge-chatbot/
 ├── n2x_knowledge.txt       # Company knowledge base (also copied into uploaded_files/)
 ├── uploaded_files/         # Stored user uploads (PDF/TXT)
 │   ├── N2X-System-Portfolio.pdf
-│   └── n2x_knowledge.txt
+│   ├── n2x_knowledge.txt
+│   └── agent_<id>/         # Per-agent document folders (created when an agent upload is made)
 ├── venv/                   # Python virtual environment
 ├── app/
 │   ├── __init__.py         # empty
 │   ├── config.py           # Loads env vars
-│   ├── db.py               # SQLite helpers
+│   ├── db.py               # SQLite helpers + agents CRUD + default agent seeding
 │   ├── main.py             # FastAPI app, middleware, page routes
 │   ├── models/
 │   │   ├── __init__.py     # empty
 │   │   └── schemas.py      # Pydantic request models
 │   ├── routes/
 │   │   ├── __init__.py     # empty
-│   │   ├── admin.py        # Admin/API-key/document endpoints
-│   │   ├── chat.py         # /chat endpoint
-│   │   └── upload.py       # /upload endpoint
+│   │   ├── admin.py        # Admin/auth/agent/document/API-key endpoints
+│   │   ├── chat.py         # /chat endpoint (agent-aware)
+│   │   └── upload.py       # /upload endpoint (agent-scoped)
 │   └── services/
 │       ├── __init__.py     # empty
 │       ├── auth.py         # Login/session/auth dependency
 │       ├── embeddings.py   # SentenceTransformer wrapper
-│       ├── llm.py          # Groq prompt + call
+│       ├── llm.py          # Groq call (uses agent system prompt)
 │       ├── pdf_processor.py# PDF text extraction + chunking
-│       └── vector_store.py # Qdrant operations
+│       └── vector_store.py # Qdrant operations (agent_id scoping)
 └── static/
     ├── index.html          # Empty page that loads the chat widget
-    ├── widget.js           # Chat widget (floating launcher + panel)
-    ├── admin.html          # Admin panel UI
+    ├── widget.js           # Chat widget (launcher + panel + agent picker)
+    ├── admin.html          # Admin panel UI (Agents / KB / History / Keys tabs)
     └── login.html          # Admin login UI
 ```
 
@@ -86,31 +89,48 @@ knowledge-chatbot/
 ### 4.1 Document ingestion (admin uploads a file)
 
 ```
-Admin uploads PDF/TXT  ->  /upload (protected by admin cookie)
-   -> file saved to uploaded_files/
+Admin uploads PDF/TXT (+ optional agent_id)  ->  /upload (protected by admin cookie)
+   -> file saved to uploaded_files/           (agent_id omitted -> shared/general)
+      or uploaded_files/agent_<id>/<filename> (agent_id provided -> that agent only)
    -> text extracted (pypdf for PDF, decode for TXT)
    -> text split into chunks (500 chars, 50 overlap)
    -> each chunk embedded (all-MiniLM-L6-v2 -> 384-dim vector)
    -> Qdrant collection "knowledge_base" ensured
-   -> old points with same filename deleted
-   -> new points upserted (payload: text + filename)
+   -> old points with same filename AND same agent scope deleted
+   -> new points upserted (payload: text + filename [+ agent_id])
 ```
+
+Each vector point carries an optional `agent_id` payload field. Points without `agent_id` belong to the **shared/general** knowledge base and are visible to every agent.
 
 ### 4.2 Chat (user asks a question)
 
 ```
-User sends question (+ session_id)  ->  POST /chat
+User sends question (+ session_id + agent_id)  ->  POST /chat
    -> question saved to SQLite messages table (role="user")
    -> question embedded
-   -> top-3 chunks retrieved from Qdrant by cosine similarity
+   -> top-3 chunks retrieved from Qdrant by cosine similarity,
+      filtered to shared (agent_id is null) OR that agent's own points
+   -> if question mentions contact/"baat", contact details injected as context
    -> chunks joined as "context"
-   -> prompt built (company persona, language rule, context, question)
+   -> system prompt loaded from the selected agent (or the default prompt)
    -> Groq LLM returns answer
    -> answer saved to SQLite messages table (role="assistant")
    -> {question, answer, sources_used} returned to widget
 ```
 
-### 4.3 Auth (admin login)
+### 4.3 Agent management (admin)
+
+```
+POST   /agents             ->  create agent (name, system_prompt, greeting)
+GET    /agents             ->  public list (id, name, greeting) — used by the widget
+GET    /agents/{id}        ->  full detail incl. system_prompt (admin only)
+PUT    /agents/{id}        ->  edit agent
+DELETE /agents/{id}        ->  delete agent + its Qdrant points + its uploaded_files/agent_<id>/ folder
+```
+
+A default **"N2X Assistant"** agent is auto-seeded in `init_db()` if the `agents` table is empty, so the system works out-of-the-box with the existing company knowledge.
+
+### 4.4 Auth (admin login)
 
 ```
 POST /admin/login  ->  verify username/password vs env vars (hmac.compare_digest)
@@ -136,17 +156,26 @@ against the admin_sessions table. Logout deletes the row + cookie.
 ### Chat
 | Method | Path   | Auth | Description |
 |--------|--------|------|-------------|
-| POST   | `/chat` | None | Body `{question, session_id?}` → `{question, answer, sources_used}` |
+| POST   | `/chat` | None | Body `{question, session_id?, agent_id?}` → `{question, answer, sources_used}` |
 
-### Admin / Auth
+### Agents
+| Method | Path            | Auth (cookie) | Description |
+|--------|-----------------|---------------|-------------|
+| GET    | `/agents`         | public | List `{id, name, greeting}` (used by the widget picker) |
+| POST   | `/agents`         | required | Body `{name, system_prompt, greeting}` → creates agent |
+| GET    | `/agents/{id}`    | required | Full agent detail incl. `system_prompt` |
+| PUT    | `/agents/{id}`    | required | Body `{name, system_prompt, greeting}` → updates agent |
+| DELETE | `/agents/{id}`    | required | Deletes agent + its Qdrant points + its file folder |
+
+### Admin / Auth / Documents / Keys
 | Method | Path                 | Auth (cookie) | Description |
 |--------|----------------------|---------------|-------------|
 | POST   | `/admin/login`       | – | Body `{username, password}` → sets cookie, `{message}`; 401 on bad creds |
 | POST   | `/admin/logout`      | – | Destroys session row + clears cookie |
 | GET    | `/admin/check`       | – | `{authenticated: bool}` |
-| POST   | `/upload`            | required | Multipart file (PDF/TXT) → embeds into vector DB |
-| GET    | `/documents`         | required | List `{filename, size}` of stored files |
-| DELETE | `/documents/{filename}` | required | Delete file + its Qdrant points |
+| POST   | `/upload`            | required | Multipart file (PDF/TXT) + optional form field `agent_id` → embeds into vector DB |
+| GET    | `/documents`         | required | List `{filename, size}`; optional query param `agent_id` scopes the list |
+| DELETE | `/documents/{filename}` | required | Delete file + its Qdrant points; optional query param `agent_id` |
 | GET    | `/conversations`     | required | All messages ordered by id |
 | POST   | `/api-keys`          | required | Body `{label}` → returns new API key |
 | GET    | `/api-keys`          | required | List API keys |
@@ -178,6 +207,14 @@ CREATE TABLE IF NOT EXISTS api_keys (
 
 CREATE TABLE IF NOT EXISTS admin_sessions (
     token TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS agents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    system_prompt TEXT NOT NULL,
+    greeting TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 ```
@@ -282,6 +319,55 @@ def init_db():
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS agents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                system_prompt TEXT NOT NULL,
+                greeting TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+
+    seed_default_agent()
+
+
+DEFAULT_SYSTEM_PROMPT = """You are N2X System's friendly chat assistant. Follow these rules:
+
+1. Language & greeting: Reply in the SAME language the user writes in. If Roman Urdu/Hindi, reply in Roman Urdu/Hindi; if English, reply in English. GREETING RULES: NEVER use "Namaste", "Namastey", "Namaskar" or any Hindi greeting. Always keep it simple and neutral: use "Hi" or "Hello" (optionally "Assalam-o-Alaikum" in Roman Urdu chats). Avoid any religious or region-specific greetings.
+
+2. Roman Urdu is written informally with many spellings. Understand intent regardless of spelling/small typos. For example: "kasiay/kese/kaise" all mean "kaise" (how), "pr/per/par" all mean "par" (at/on), "kru/karo/karu" mean "karein" (to do), "aat/baat/bat" all mean "baat" (talk).
+
+3. CRITICAL — "baat" means "contact": "baat karna", "baat kaha", "raabta", "milna", "contact" all mean getting in touch with N2X System. When the user asks how/where to talk to or contact you, ALWAYS directly give the contact details below from the context: website, email, phone, and address. Do not deflect with a generic "ask me about services" reply.
+
+4. Be friendly, warm and conversational. Use emojis naturally to make the chat feel lively. 😊
+
+5. Answer using the context below whenever it is relevant. You can also use general knowledge about N2X System as a software development agency (services, projects, contact info).
+
+6. If you genuinely cannot help, politely say so in the user's language and suggest asking about N2X System's services or projects.
+
+7. Keep answers short and to the point (2-4 sentences max).
+
+Examples of correct behavior:
+Q: "in se baat kaha pr kru?"
+A: "Hi! 😊 Aap N2X System se baat karne ke liye email info@n2xsystem.com, phone +92 323 452 9766, ya website www.n2xsystem.com use kar sakte hain. Address: Plot C 12, Street 195, DHA Phase 1, Lahore."
+
+Q: "tum se contact kaise karu?"
+A: "Hello! Aap humein email info@n2xsystem.com par likh sakte hain, +92 323 452 9766 par call kar sakte hain, ya website www.n2xsystem.com par visit kar sakte hain. 😊"""
+
+DEFAULT_GREETING = "Hello! Main aapki kaise madad kar sakta hoon?"
+
+
+def seed_default_agent():
+    with get_conn() as conn:
+        row = conn.execute("SELECT COUNT(*) AS c FROM agents").fetchone()
+        if row["c"] == 0:
+            conn.execute(
+                "INSERT INTO agents (name, system_prompt, greeting) VALUES (?, ?, ?)",
+                ("N2X Assistant", DEFAULT_SYSTEM_PROMPT, DEFAULT_GREETING),
+            )
 
 
 def save_message(session_id: str, role: str, content: str):
@@ -353,6 +439,52 @@ def delete_admin_session(token: str) -> bool:
     with get_conn() as conn:
         cur = conn.execute("DELETE FROM admin_sessions WHERE token = ?", (token,))
     return cur.rowcount > 0
+
+
+def create_agent(name: str, system_prompt: str, greeting: str) -> dict:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO agents (name, system_prompt, greeting) VALUES (?, ?, ?)",
+            (name, system_prompt, greeting),
+        )
+        agent_id = cur.lastrowid
+    return get_agent(agent_id)
+
+
+def get_agent(agent_id: int) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM agents WHERE id = ?",
+            (agent_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_agents() -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, name, system_prompt, greeting, created_at
+            FROM agents
+            ORDER BY id
+            """
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def update_agent(agent_id: int, name: str, system_prompt: str, greeting: str) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE agents SET name = ?, system_prompt = ?, greeting = ? WHERE id = ?",
+            (name, system_prompt, greeting, agent_id),
+        )
+    return cur.rowcount > 0
+
+
+def delete_agent(agent_id: int) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM agents WHERE id = ?", (agent_id,))
+    return cur.rowcount > 0
 ```
 
 ### 8.5 `app/main.py`
@@ -417,10 +549,23 @@ from pydantic import BaseModel
 class ChatRequest(BaseModel):
     question: str
     session_id: str | None = None
+    agent_id: int | None = None
 
 
 class ApiKeyCreate(BaseModel):
     label: str
+
+
+class AgentCreate(BaseModel):
+    name: str
+    system_prompt: str
+    greeting: str = ""
+
+
+class AgentUpdate(BaseModel):
+    name: str
+    system_prompt: str
+    greeting: str = ""
 ```
 
 ### 8.7 `app/routes/chat.py`
@@ -431,9 +576,25 @@ from app.models.schemas import ChatRequest
 from app.services.embeddings import generate_embedding
 from app.services.vector_store import search_similar_chunks
 from app.services.llm import generate_answer
-from app.db import save_message
+from app.db import save_message, get_agent, DEFAULT_SYSTEM_PROMPT
 
 router = APIRouter()
+
+CONTACT_KEYWORDS = (
+    "contact", "baat", "raabta", "milna", "email", "phone", "number",
+    "address", "whatsapp", "call", "link", "reach", "talk",
+)
+CONTACT_CHUNK = (
+    "N2X System CONTACT: Website: www.n2xsystem.com\n"
+    "Email: info@n2xsystem.com\n"
+    "Phone: +92 323 452 9766\n"
+    "Address: Plot C 12, Street 195, DHA Phase 1, Lahore 54000"
+)
+
+
+def _is_contact_question(question: str) -> bool:
+    q = question.lower()
+    return any(word in q for word in CONTACT_KEYWORDS)
 
 
 @router.post("/chat")
@@ -444,14 +605,25 @@ async def chat(request: ChatRequest):
     # 1. Embed the question
     query_embedding = generate_embedding(request.question)
 
-    # 2. Search Qdrant for relevant chunks
-    relevant_chunks = search_similar_chunks(query_embedding, top_k=3)
+    # 2. Search Qdrant for relevant chunks (agent-specific + shared)
+    relevant_chunks = search_similar_chunks(query_embedding, top_k=3, agent_id=request.agent_id)
 
-    # 3. Combine chunks into context
+    # 3. Combine chunks into context. If the question is about
+    # contact/talk ("baat kaha pr kru?"), always include contact info.
+    relevant_chunks = list(relevant_chunks)
+    if _is_contact_question(request.question):
+        relevant_chunks.insert(0, CONTACT_CHUNK)
     context = "\n\n".join(relevant_chunks)
 
-    # 4. Ask LLM
-    answer = generate_answer(request.question, context)
+    # 4. Use the selected agent's system prompt (if any), else the default
+    system_prompt = DEFAULT_SYSTEM_PROMPT
+    if request.agent_id is not None:
+        agent = get_agent(request.agent_id)
+        if agent:
+            system_prompt = agent["system_prompt"]
+
+    # 5. Ask LLM
+    answer = generate_answer(request.question, context, system_prompt)
 
     if request.session_id:
         save_message(request.session_id, "assistant", answer)
@@ -465,7 +637,7 @@ async def chat(request: ChatRequest):
 
 ### 8.8 `app/routes/upload.py`
 ```python
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
 import shutil
 import os
 
@@ -479,13 +651,21 @@ UPLOAD_DIR = "uploaded_files"
 ALLOWED_EXTENSIONS = (".pdf", ".txt")
 
 
+def agent_upload_dir(agent_id: int) -> str:
+    return os.path.join(UPLOAD_DIR, f"agent_{agent_id}")
+
+
 @router.post("/upload", dependencies=[Depends(require_admin)])
-async def upload_pdf(file: UploadFile = File(...)):
+async def upload_pdf(file: UploadFile = File(...), agent_id: int | None = Form(None)):
     ext = os.path.splitext(file.filename)[1].lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail="Only PDF and TXT files are allowed")
 
-    file_path = os.path.join(UPLOAD_DIR, file.filename)
+    upload_dir = agent_upload_dir(agent_id) if agent_id is not None else UPLOAD_DIR
+    if agent_id is not None:
+        os.makedirs(upload_dir, exist_ok=True)
+
+    file_path = os.path.join(upload_dir, file.filename)
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
@@ -506,8 +686,8 @@ async def upload_pdf(file: UploadFile = File(...)):
 
     # Store in Qdrant, replacing any previously stored points for this file
     create_collection_if_not_exists()
-    delete_points_by_filename(file.filename)
-    store_chunks(chunks, embeddings, file.filename)
+    delete_points_by_filename(file.filename, agent_id)
+    store_chunks(chunks, embeddings, file.filename, agent_id)
 
     return {
         "filename": file.filename,
@@ -530,6 +710,8 @@ def extract_text(file_path: str, ext: str) -> str:
 ### 8.9 `app/routes/admin.py`
 ```python
 import os
+import shutil
+import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
@@ -539,8 +721,13 @@ from app.db import (
     create_api_key,
     list_api_keys,
     delete_api_key,
+    create_agent,
+    get_agent,
+    list_agents,
+    update_agent,
+    delete_agent,
 )
-from app.models.schemas import ApiKeyCreate
+from app.models.schemas import ApiKeyCreate, AgentCreate, AgentUpdate
 from app.services.auth import (
     COOKIE_NAME,
     create_session,
@@ -548,7 +735,8 @@ from app.services.auth import (
     is_authenticated,
     require_admin,
 )
-from app.services.vector_store import delete_points_by_filename
+from app.services.vector_store import delete_points_by_filename, delete_points_by_agent
+from app.routes.upload import agent_upload_dir
 
 router = APIRouter()
 UPLOAD_DIR = "uploaded_files"
@@ -598,25 +786,29 @@ def check_auth(request: Request):
 
 
 @router.get("/documents", dependencies=[Depends(require_admin)])
-def list_documents():
+def list_documents(agent_id: int | None = None):
+    base_dir = agent_upload_dir(agent_id) if agent_id is not None else UPLOAD_DIR
+    if not os.path.isdir(base_dir):
+        return []
     files = []
-    for name in os.listdir(UPLOAD_DIR):
-        path = os.path.join(UPLOAD_DIR, name)
+    for name in os.listdir(base_dir):
+        path = os.path.join(base_dir, name)
         if os.path.isfile(path) and name.lower().endswith(ALLOWED_EXTENSIONS):
             files.append({"filename": name, "size": os.path.getsize(path)})
     return files
 
 
 @router.delete("/documents/{filename}", dependencies=[Depends(require_admin)])
-def delete_document(filename: str):
+def delete_document(filename: str, agent_id: int | None = None):
     if not _safe_filename(filename):
         raise HTTPException(status_code=400, detail="Invalid filename")
 
-    path = os.path.join(UPLOAD_DIR, filename)
+    base_dir = agent_upload_dir(agent_id) if agent_id is not None else UPLOAD_DIR
+    path = os.path.join(base_dir, filename)
     if os.path.exists(path):
         os.remove(path)
 
-    delete_points_by_filename(filename)
+    delete_points_by_filename(filename, agent_id)
     return {"filename": filename, "message": "Document deleted"}
 
 

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
 import shutil
 import os
 
@@ -12,13 +12,21 @@ UPLOAD_DIR = "uploaded_files"
 ALLOWED_EXTENSIONS = (".pdf", ".txt")
 
 
+def agent_upload_dir(agent_id: int) -> str:
+    return os.path.join(UPLOAD_DIR, f"agent_{agent_id}")
+
+
 @router.post("/upload", dependencies=[Depends(require_admin)])
-async def upload_pdf(file: UploadFile = File(...)):
+async def upload_pdf(file: UploadFile = File(...), agent_id: int | None = Form(None)):
     ext = os.path.splitext(file.filename)[1].lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail="Only PDF and TXT files are allowed")
 
-    file_path = os.path.join(UPLOAD_DIR, file.filename)
+    upload_dir = agent_upload_dir(agent_id) if agent_id is not None else UPLOAD_DIR
+    if agent_id is not None:
+        os.makedirs(upload_dir, exist_ok=True)
+
+    file_path = os.path.join(upload_dir, file.filename)
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
@@ -39,8 +47,8 @@ async def upload_pdf(file: UploadFile = File(...)):
 
     # Store in Qdrant, replacing any previously stored points for this file
     create_collection_if_not_exists()
-    delete_points_by_filename(file.filename)
-    store_chunks(chunks, embeddings, file.filename)
+    delete_points_by_filename(file.filename, agent_id)
+    store_chunks(chunks, embeddings, file.filename, agent_id)
 
     return {
         "filename": file.filename,

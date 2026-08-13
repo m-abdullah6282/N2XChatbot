@@ -4,7 +4,7 @@ from app.models.schemas import ChatRequest
 from app.services.embeddings import generate_embedding
 from app.services.vector_store import search_similar_chunks
 from app.services.llm import generate_answer
-from app.db import save_message
+from app.db import save_message, get_agent, DEFAULT_SYSTEM_PROMPT
 
 router = APIRouter()
 
@@ -33,8 +33,8 @@ async def chat(request: ChatRequest):
     # 1. Embed the question
     query_embedding = generate_embedding(request.question)
 
-    # 2. Search Qdrant for relevant chunks
-    relevant_chunks = search_similar_chunks(query_embedding, top_k=3)
+    # 2. Search Qdrant for relevant chunks (agent-specific + shared)
+    relevant_chunks = search_similar_chunks(query_embedding, top_k=3, agent_id=request.agent_id)
 
     # 3. Combine chunks into context. If the question is about
     # contact/talk ("baat kaha pr kru?"), always include contact info.
@@ -43,8 +43,15 @@ async def chat(request: ChatRequest):
         relevant_chunks.insert(0, CONTACT_CHUNK)
     context = "\n\n".join(relevant_chunks)
 
-    # 4. Ask LLM
-    answer = generate_answer(request.question, context)
+    # 4. Use the selected agent's system prompt (if any), else the default
+    system_prompt = DEFAULT_SYSTEM_PROMPT
+    if request.agent_id is not None:
+        agent = get_agent(request.agent_id)
+        if agent:
+            system_prompt = agent["system_prompt"]
+
+    # 5. Ask LLM
+    answer = generate_answer(request.question, context, system_prompt)
 
     if request.session_id:
         save_message(request.session_id, "assistant", answer)
