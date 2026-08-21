@@ -82,6 +82,93 @@
   var agents = [];
   var currentAgentId = null;
 
+  // --- Human handoff reply polling ---
+  // The widget normally only shows messages from the live browser session.
+  // When a human admin replies to a handoff from the admin panel, that reply
+  // is saved server-side as an assistant message. While the chat panel is
+  // open we poll a lightweight endpoint every 15s and render any assistant
+  // messages newer than our last-seen id, so the user sees the human reply.
+  var POLL_MS = 15000;
+  var pollTimer = null;
+  var pendingOwnRequest = 0;
+
+  function lastSeenKey() {
+    return "n2x_last_seen_" + sessionId;
+  }
+
+  // The cursor survives page reloads (persisted per session). Anything above
+  // it is genuinely new for THIS visitor — e.g. a human reply that arrived
+  // while the page was closed — and must not be silently marked as seen.
+  var lastSeenMsgId = parseInt(localStorage.getItem(lastSeenKey()), 10) || 0;
+
+  // Forward-only: never lets a stale/out-of-order response drag the cursor
+  // backward (which would make polling re-render old messages as "new").
+  function advanceCursor(id) {
+    if (typeof id !== "number" || isNaN(id)) return;
+    if (id > lastSeenMsgId) {
+      lastSeenMsgId = id;
+      try {
+        localStorage.setItem(lastSeenKey(), String(id));
+      } catch (e) {}
+    }
+  }
+
+  async function fetchSessionMessages() {
+    try {
+      var res = await fetch(API_BASE + "/chat/messages/" + encodeURIComponent(sessionId));
+      if (!res.ok) return [];
+      return (await res.json()) || [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function renderNewMessages(msgs) {
+    var maxId = lastSeenMsgId;
+    msgs.forEach(function (m) {
+      if (m.id > maxId) maxId = m.id;
+      if (m.id > lastSeenMsgId && m.role === "assistant") addMessage(m.content, "bot");
+    });
+    advanceCursor(maxId);
+  }
+
+  async function pollMessages() {
+    var msgs = await fetchSessionMessages();
+    if (pendingOwnRequest > 0) {
+      // Our own /chat answer arrives via the direct response, which carries
+      // its exact message id — that alone advances the cursor. Do NOT touch
+      // the cursor here: a human reply inserted while our request was in
+      // flight must stay "new" so the next tick renders it.
+      return;
+    }
+    renderNewMessages(msgs);
+  }
+
+  function startPolling() {
+    if (pollTimer) return;
+    pollMessages();
+    pollTimer = setInterval(pollMessages, POLL_MS);
+  }
+
+  function stopPolling() {
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  }
+
+  // First-ever visit for this browser (no stored cursor): adopt whatever
+  // history already exists as "seen" so old rows are not replayed. The
+  // zero-check at resolve time prevents a slow baseline fetch from marking
+  // genuinely new messages (e.g. an early human reply) as seen.
+  if (!lastSeenMsgId) {
+    fetchSessionMessages().then(function (msgs) {
+      if (msgs.length && lastSeenMsgId === 0) {
+        advanceCursor(msgs[msgs.length - 1].id);
+      }
+    });
+  }
+
   function selectAgent(agent) {
     currentAgentId = agent.id;
     localStorage.setItem("n2x_agent_id", String(agent.id));
@@ -121,10 +208,12 @@
     panel.classList.remove("hidden");
     inputEl.focus();
     messagesEl.scrollTop = messagesEl.scrollHeight;
+    startPolling();
   }
 
   function closePanel() {
     panel.classList.add("hidden");
+    stopPolling();
   }
 
   launcher.addEventListener("click", openPanel);
@@ -148,19 +237,29 @@
 
     var typingEl = addMessage("Soch raha hoon...", "bot typing");
 
+    pendingOwnRequest++;
+    var data = null;
     try {
       var res = await fetch(API_BASE + "/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question: question, session_id: sessionId, agent_id: currentAgentId }),
       });
-      var data = await res.json();
+      data = await res.json();
       typingEl.classList.remove("typing");
       typingEl.textContent = data.answer || "Koi answer nahi mila.";
     } catch (err) {
       typingEl.classList.remove("typing");
       typingEl.textContent = "Error: server se connect nahi ho paya.";
     }
+    // The /chat response carries the exact id of the assistant row it saved
+    // (normal answer, fallback, or service-unavailable notice). Advance past
+    // it immediately so polling can never mistake our own answer — e.g. a
+    // fallback — for a newly arriving message and render it twice.
+    if (data && typeof data.message_id === "number") {
+      advanceCursor(data.message_id);
+    }
+    pendingOwnRequest--;
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 

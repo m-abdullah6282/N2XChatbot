@@ -64,6 +64,7 @@
   <button class="tab active font-semibold py-3 px-5 text-sm whitespace-nowrap cursor-pointer" data-tab="agents" id="tab-agents">Agents</button>
   <button class="tab font-semibold py-3 px-5 text-sm whitespace-nowrap cursor-pointer" data-tab="kb" id="tab-kb">Knowledge Base</button>
   <button class="tab font-semibold py-3 px-5 text-sm whitespace-nowrap cursor-pointer" data-tab="history" id="tab-history">Chat History</button>
+  <button class="tab font-semibold py-3 px-5 text-sm whitespace-nowrap cursor-pointer" data-tab="handoffs" id="tab-handoffs">Needs Attention</button>
   <button class="tab font-semibold py-3 px-5 text-sm whitespace-nowrap cursor-pointer" data-tab="analytics" id="tab-analytics">Analytics</button>
   <button class="tab font-semibold py-3 px-5 text-sm whitespace-nowrap cursor-pointer" data-tab="keys" id="tab-keys">API Keys</button>
 </div>
@@ -129,6 +130,16 @@
     <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-200">
       <h2 class="text-lg font-bold text-brandDark mb-4">Conversations</h2>
       <div id="convBody"></div>
+    </div>
+  </section>
+
+  <!-- Needs Attention (Human Handoff) -->
+  <section id="handoffs" class="panel">
+    <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-200">
+      <h2 class="text-lg font-bold text-brandDark mb-1">Needs Attention</h2>
+      <p class="text-slate-400 text-sm mb-4">Sawal jin ka jawab bot nahi de saka. Reply likh ke bhejo, ya dismiss karo agar aap ne kahin aur se handle kar liya.</p>
+      <div id="handoffsBody"></div>
+      <div id="handoffsEmpty" class="empty text-slate-400 text-sm py-3" style="display:none;">Koi pending sawal nahi hai 🎉</div>
     </div>
   </section>
 
@@ -235,6 +246,7 @@
       if (tab.dataset.tab === "agents") loadAgents();
       if (tab.dataset.tab === "kb") loadDocuments();
       if (tab.dataset.tab === "history") loadConversations();
+      if (tab.dataset.tab === "handoffs") loadHandoffs();
       if (tab.dataset.tab === "analytics") loadAnalytics();
       if (tab.dataset.tab === "keys") loadKeys();
     });
@@ -525,6 +537,59 @@
       });
     } catch (err) {
       $("convBody").innerHTML = '<div class="text-slate-400 text-sm py-3">Error loading history: ' + err.message + "</div>";
+    }
+  }
+
+  // ---------- Needs Attention (Human Handoff) ----------
+
+  async function loadHandoffs() {
+    try {
+      const handoffs = await api("/admin/handoffs");
+      const body = $("handoffsBody");
+      body.innerHTML = "";
+      $("handoffsEmpty").style.display = handoffs.length ? "none" : "block";
+
+      handoffs.forEach((h) => {
+        const shortSession = h.session_id.length > 18 ? h.session_id.slice(0, 15) + "…" : h.session_id;
+        const row = document.createElement("div");
+        row.className = "chat-row p-3.5 border border-slate-200 rounded-xl mb-3";
+        row.innerHTML = `
+          <div class="flex items-center justify-between gap-3 mb-1.5">
+            <span class="key-value">${shortSession}</span>
+            <span class="text-xs text-slate-400 whitespace-nowrap">${h.created_at}</span>
+          </div>
+          <div class="line user my-1 text-sm"><span class="who">User:</span> ${h.question}</div>
+          ${h.agent_name ? `<div class="text-xs text-slate-400 mt-1">Agent: ${h.agent_name}</div>` : ""}
+          <div class="flex items-center gap-2 mt-3">
+            <input class="handoff-reply flex-1 border border-slate-300 rounded-lg px-3 py-1.5 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20" placeholder="Human reply likho..." />
+            <button class="reply-btn bg-brand hover:bg-brandDark text-white rounded-lg px-3 py-1.5 text-xs font-semibold">Reply</button>
+            <button class="dismiss-btn btn danger text-white rounded-lg px-3 py-1.5">Dismiss</button>
+          </div>`;
+        row.querySelector(".reply-btn").onclick = async () => {
+          const input = row.querySelector(".handoff-reply");
+          const message = input.value.trim();
+          if (!message) { alert("Pehle reply likho."); return; }
+          try {
+            await api("/admin/handoffs/" + encodeURIComponent(h.session_id) + "/reply", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ message }),
+            });
+            loadHandoffs();
+          } catch (err) { alert(err.message); }
+        };
+        row.querySelector(".dismiss-btn").onclick = async () => {
+          if (!confirm("Is handoff ko dismiss karna hai? (Bina reply ke resolve ho jayega)")) return;
+          try {
+            await api("/admin/handoffs/" + encodeURIComponent(h.session_id) + "/resolve", { method: "POST" });
+            loadHandoffs();
+          } catch (err) { alert(err.message); }
+        };
+        body.appendChild(row);
+      });
+    } catch (err) {
+      $("handoffsEmpty").style.display = "block";
+      $("handoffsEmpty").textContent = "Error loading handoffs: " + err.message;
     }
   }
 

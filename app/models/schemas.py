@@ -21,3 +21,7 @@ class AgentUpdate(BaseModel):
     name: str
     system_prompt: str
     greeting: str = ""
+
+
+class HandoffReply(BaseModel):
+    message: str

@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from app.db import (
     get_conversations,
+    save_message,
     get_total_conversations,
     get_total_messages,
     get_fallback_rate,
@@ -21,8 +22,10 @@ from app.db import (
     list_agents,
     update_agent,
     delete_agent,
+    get_pending_handoffs,
+    resolve_handoff,
 )
-from app.models.schemas import ApiKeyCreate, AgentCreate, AgentUpdate
+from app.models.schemas import ApiKeyCreate, AgentCreate, AgentUpdate, HandoffReply
 from app.services.auth import (
     COOKIE_NAME,
     create_session,
@@ -110,6 +113,28 @@ def delete_document(filename: str, agent_id: int | None = None):
 @router.get("/conversations", dependencies=[Depends(require_admin)])
 def conversations():
     return get_conversations()
+
+
+@router.get("/admin/handoffs", dependencies=[Depends(require_admin)])
+def handoffs():
+    return get_pending_handoffs()
+
+
+@router.post("/admin/handoffs/{session_id}/reply", dependencies=[Depends(require_admin)])
+def reply_to_handoff(session_id: str, req: HandoffReply):
+    message = req.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+    save_message(session_id, "assistant", message, was_fallback=0)
+    resolve_handoff(session_id)
+    return {"message": "Reply sent"}
+
+
+@router.post("/admin/handoffs/{session_id}/resolve", dependencies=[Depends(require_admin)])
+def resolve_existing_handoff(session_id: str):
+    if not resolve_handoff(session_id):
+        raise HTTPException(status_code=404, detail="Pending handoff not found")
+    return {"message": "Handoff resolved"}
 
 
 @router.get("/admin/analytics", dependencies=[Depends(require_admin)])

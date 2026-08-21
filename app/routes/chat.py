@@ -11,6 +11,8 @@ from app.services.llm import generate_answer
 from app.db import (
     save_message,
     get_agent,
+    get_session_messages,
+    create_or_update_handoff,
     DEFAULT_SYSTEM_PROMPT,
     FALLBACK_MESSAGE,
     NO_RELEVANT_CONTEXT_FOUND,
@@ -57,14 +59,32 @@ def _generate_answer_or_fallback(question: str, context: str, fallback: str) -> 
 
 @router.post("/chat")
 async def chat(request: ChatRequest):
+    # Ids of the rows this request inserts. The widget needs the assistant
+    # message id to advance its "last seen" cursor past its own answer;
+    # without it a stale cursor makes polling re-render old messages.
+    user_message_id: int | None = None
     if request.session_id:
-        save_message(request.session_id, "user", request.question)
+        user_message_id = save_message(request.session_id, "user", request.question)
+
+    def _reply(answer: str, sources_used: int = 0, was_fallback: int = 0):
+        message_id: int | None = None
+        if request.session_id:
+            message_id = save_message(
+                request.session_id, "assistant", answer, was_fallback=was_fallback
+            )
+            if was_fallback:
+                create_or_update_handoff(request.session_id, request.question, request.agent_id)
+        return {
+            "question": request.question,
+            "answer": answer,
+            "sources_used": sources_used,
+            "user_message_id": user_message_id,
+            "message_id": message_id,
+        }
 
     casual_answer = _casual_response(request.question)
     if casual_answer is not None:
-        if request.session_id:
-            save_message(request.session_id, "assistant", casual_answer)
-        return {"question": request.question, "answer": casual_answer, "sources_used": 0}
+        return _reply(casual_answer)
 
     # 1. Embed the question
     try:
@@ -72,13 +92,7 @@ async def chat(request: ChatRequest):
     except Exception as exc:
         logger.exception("Embedding generation failed")
         logger.error("Embedding generation failed -> %s: %s", type(exc).__name__, exc)
-        if request.session_id:
-            save_message(request.session_id, "assistant", RETRIEVAL_UNAVAILABLE_MESSAGE)
-        return {
-            "question": request.question,
-            "answer": RETRIEVAL_UNAVAILABLE_MESSAGE,
-            "sources_used": 0,
-        }
+        return _reply(RETRIEVAL_UNAVAILABLE_MESSAGE)
 
     # 2. Search Qdrant for relevant chunks (agent-specific + shared)
     relevant_chunks, retrieval_available = search_similar_chunks(
@@ -89,13 +103,7 @@ async def chat(request: ChatRequest):
     )
 
     if not retrieval_available:
-        if request.session_id:
-            save_message(request.session_id, "assistant", RETRIEVAL_UNAVAILABLE_MESSAGE)
-        return {
-            "question": request.question,
-            "answer": RETRIEVAL_UNAVAILABLE_MESSAGE,
-            "sources_used": 0,
-        }
+        return _reply(RETRIEVAL_UNAVAILABLE_MESSAGE)
 
     # 3. Combine only retrieved chunks into the context.
     relevant_chunks = list(relevant_chunks)
@@ -120,11 +128,11 @@ async def chat(request: ChatRequest):
     )
 
     was_fallback = 1 if answer == FALLBACK_MESSAGE else 0
-    if request.session_id:
-        save_message(request.session_id, "assistant", answer, was_fallback=was_fallback)
+    return _reply(answer, sources_used=sources_used, was_fallback=was_fallback)
 
-    return {
-        "question": request.question,
-        "answer": answer,
-        "sources_used": sources_used
-    }
+
+@router.get("/chat/messages/{session_id}")
+async def session_messages(session_id: str):
+    """Lightweight public endpoint the widget polls to pick up new
+    (e.g. human-agent) assistant messages for its own session."""
+    return get_session_messages(session_id)

@@ -68,6 +68,20 @@ def init_db():
             """
         )
 
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS handoffs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                agent_id INTEGER,
+                question TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                status TEXT NOT NULL DEFAULT 'pending',
+                resolved_at TEXT
+            )
+            """
+        )
+
         _ensure_column(conn, "messages", "was_fallback", "INTEGER NOT NULL DEFAULT 0")
 
     seed_default_agent()
@@ -118,12 +132,86 @@ def seed_default_agent():
             )
 
 
-def save_message(session_id: str, role: str, content: str, was_fallback: int = 0):
+def save_message(session_id: str, role: str, content: str, was_fallback: int = 0) -> int:
+    """Insert a message and return its autoincrement id so callers (e.g. the
+    /chat response) can tell the widget exactly which row was created."""
     with get_conn() as conn:
-        conn.execute(
+        cur = conn.execute(
             "INSERT INTO messages (session_id, role, content, was_fallback) VALUES (?, ?, ?, ?)",
             (session_id, role, content, was_fallback),
         )
+        return cur.lastrowid
+
+
+def get_session_messages(session_id: str) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, role, content, created_at
+            FROM messages
+            WHERE session_id = ?
+            ORDER BY id
+            """,
+            (session_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Human agent handoff
+# ---------------------------------------------------------------------------
+
+def create_or_update_handoff(session_id: str, question: str, agent_id: int | None = None):
+    """Flag a conversation for human review. If a pending handoff already
+    exists for this session, refresh its question/timestamp instead of
+    creating a duplicate row."""
+    with get_conn() as conn:
+        existing = conn.execute(
+            "SELECT id FROM handoffs WHERE session_id = ? AND status = 'pending'",
+            (session_id,),
+        ).fetchone()
+        if existing:
+            conn.execute(
+                """
+                UPDATE handoffs
+                SET question = ?, agent_id = ?, created_at = datetime('now')
+                WHERE id = ?
+                """,
+                (question, agent_id, existing["id"]),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO handoffs (session_id, agent_id, question) VALUES (?, ?, ?)",
+                (session_id, agent_id, question),
+            )
+
+
+def get_pending_handoffs() -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT h.id, h.session_id, h.question, h.created_at,
+                   a.name AS agent_name
+            FROM handoffs h
+            LEFT JOIN agents a ON a.id = h.agent_id
+            WHERE h.status = 'pending'
+            ORDER BY h.id DESC
+            """
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def resolve_handoff(session_id: str) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            UPDATE handoffs
+            SET status = 'resolved', resolved_at = datetime('now')
+            WHERE session_id = ? AND status = 'pending'
+            """,
+            (session_id,),
+        )
+    return cur.rowcount > 0
 
 
 def get_conversations() -> list[dict]:
