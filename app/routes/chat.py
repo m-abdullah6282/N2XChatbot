@@ -1,28 +1,58 @@
+import re
+import logging
+import traceback
+
 from fastapi import APIRouter
 
 from app.models.schemas import ChatRequest
 from app.services.embeddings import generate_embedding
 from app.services.vector_store import search_similar_chunks
 from app.services.llm import generate_answer
-from app.db import save_message, get_agent, DEFAULT_SYSTEM_PROMPT
+from app.db import (
+    save_message,
+    get_agent,
+    DEFAULT_SYSTEM_PROMPT,
+    FALLBACK_MESSAGE,
+    NO_RELEVANT_CONTEXT_FOUND,
+)
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
-CONTACT_KEYWORDS = (
-    "contact", "baat", "raabta", "milna", "email", "phone", "number",
-    "address", "whatsapp", "call", "link", "reach", "talk",
-)
-CONTACT_CHUNK = (
-    "N2X System CONTACT: Website: www.n2xsystem.com\n"
-    "Email: info@n2xsystem.com\n"
-    "Phone: +92 323 452 9766\n"
-    "Address: Plot C 12, Street 195, DHA Phase 1, Lahore 54000"
+RETRIEVAL_UNAVAILABLE_MESSAGE = (
+    "Hamari knowledge service filhal available nahi hai. "
+    "Aap N2X System se info@n2xsystem.com ya +92 323 452 9766 par rabta kar sakte hain."
 )
 
 
-def _is_contact_question(question: str) -> bool:
-    q = question.lower()
-    return any(word in q for word in CONTACT_KEYWORDS)
+def _casual_response(question: str) -> str | None:
+    """Keep lightweight conversation working when the knowledge service is down."""
+    normalized = re.sub(r"[^a-z0-9\s]", "", question.lower()).strip()
+    words = set(normalized.split())
+    greeting_words = {
+        "hi", "hello", "hey", "salam", "aoa", "assalamualaikum", "good", "morning",
+        "evening", "there", "bro", "yaar",
+    }
+
+    if words and words <= {"thanks", "thank", "you", "so", "much", "shukriya", "jazakallah"}:
+        return "Khushi hui! Aap ko N2X System ke bare mein koi bhi sawal ho to pooch sakte hain."
+    if words and words <= {"bye", "goodbye", "allahhafiz", "khudahafiz", "ok", "okay"}:
+        return "Allah Hafiz! Jab bhi zaroorat ho, hum yahan hain."
+    if words and words <= greeting_words or normalized in {"kya haal hai", "how are you", "whats up"}:
+        if normalized in {"hi", "hello", "hey", "good morning", "good evening"}:
+            return "Hello! How can I help you with N2X System today?"
+        return "Hi! Main theek hoon. N2X System ke bare mein aap ko kis cheez mein madad chahiye?"
+    return None
+
+
+def _generate_answer_or_fallback(question: str, context: str, fallback: str) -> str:
+    try:
+        return generate_answer(question, context)
+    except Exception as exc:
+        logger.exception("LLM request failed")
+        logger.error("LLM request failed -> %s: %s", type(exc).__name__, exc)
+        traceback.print_exc()
+        return fallback
 
 
 @router.post("/chat")
@@ -30,18 +60,52 @@ async def chat(request: ChatRequest):
     if request.session_id:
         save_message(request.session_id, "user", request.question)
 
+    casual_answer = _casual_response(request.question)
+    if casual_answer is not None:
+        if request.session_id:
+            save_message(request.session_id, "assistant", casual_answer)
+        return {"question": request.question, "answer": casual_answer, "sources_used": 0}
+
     # 1. Embed the question
-    query_embedding = generate_embedding(request.question)
+    try:
+        query_embedding = generate_embedding(request.question)
+    except Exception as exc:
+        logger.exception("Embedding generation failed")
+        logger.error("Embedding generation failed -> %s: %s", type(exc).__name__, exc)
+        if request.session_id:
+            save_message(request.session_id, "assistant", RETRIEVAL_UNAVAILABLE_MESSAGE)
+        return {
+            "question": request.question,
+            "answer": RETRIEVAL_UNAVAILABLE_MESSAGE,
+            "sources_used": 0,
+        }
 
     # 2. Search Qdrant for relevant chunks (agent-specific + shared)
-    relevant_chunks = search_similar_chunks(query_embedding, top_k=3, agent_id=request.agent_id)
+    relevant_chunks, retrieval_available = search_similar_chunks(
+        query_embedding,
+        top_k=3,
+        agent_id=request.agent_id,
+        query_text=request.question,
+    )
 
-    # 3. Combine chunks into context. If the question is about
-    # contact/talk ("baat kaha pr kru?"), always include contact info.
+    if not retrieval_available:
+        if request.session_id:
+            save_message(request.session_id, "assistant", RETRIEVAL_UNAVAILABLE_MESSAGE)
+        return {
+            "question": request.question,
+            "answer": RETRIEVAL_UNAVAILABLE_MESSAGE,
+            "sources_used": 0,
+        }
+
+    # 3. Combine only retrieved chunks into the context.
     relevant_chunks = list(relevant_chunks)
-    if _is_contact_question(request.question):
-        relevant_chunks.insert(0, CONTACT_CHUNK)
-    context = "\n\n".join(relevant_chunks)
+
+    sources_used = 0
+    if relevant_chunks:
+        context = "\n\n".join(relevant_chunks)
+        sources_used = len(relevant_chunks)
+    else:
+        context = NO_RELEVANT_CONTEXT_FOUND
 
     # 4. Use the selected agent's system prompt (if any), else the default
     system_prompt = DEFAULT_SYSTEM_PROMPT
@@ -51,13 +115,16 @@ async def chat(request: ChatRequest):
             system_prompt = agent["system_prompt"]
 
     # 5. Ask LLM
-    answer = generate_answer(request.question, context, system_prompt)
+    answer = _generate_answer_or_fallback(
+        request.question, context, RETRIEVAL_UNAVAILABLE_MESSAGE
+    )
 
+    was_fallback = 1 if answer == FALLBACK_MESSAGE else 0
     if request.session_id:
-        save_message(request.session_id, "assistant", answer)
+        save_message(request.session_id, "assistant", answer, was_fallback=was_fallback)
 
     return {
         "question": request.question,
         "answer": answer,
-        "sources_used": len(relevant_chunks)
+        "sources_used": sources_used
     }

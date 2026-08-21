@@ -64,6 +64,7 @@
   <button class="tab active font-semibold py-3 px-5 text-sm whitespace-nowrap cursor-pointer" data-tab="agents" id="tab-agents">Agents</button>
   <button class="tab font-semibold py-3 px-5 text-sm whitespace-nowrap cursor-pointer" data-tab="kb" id="tab-kb">Knowledge Base</button>
   <button class="tab font-semibold py-3 px-5 text-sm whitespace-nowrap cursor-pointer" data-tab="history" id="tab-history">Chat History</button>
+  <button class="tab font-semibold py-3 px-5 text-sm whitespace-nowrap cursor-pointer" data-tab="analytics" id="tab-analytics">Analytics</button>
   <button class="tab font-semibold py-3 px-5 text-sm whitespace-nowrap cursor-pointer" data-tab="keys" id="tab-keys">API Keys</button>
 </div>
 
@@ -80,6 +81,10 @@
       <input id="agentGreeting" class="w-full border border-slate-300 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20" placeholder="Hello! Main aapki kaise madad kar sakta hoon?" />
       <label class="block text-sm font-semibold text-charcoal/80 mt-4 mb-2" for="agentPrompt">Instructions / System Prompt</label>
       <textarea id="agentPrompt" class="w-full border border-slate-300 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20 resize-y min-h-[120px] font-mono" placeholder="You are ... Follow these rules: ..."></textarea>
+      <div id="initialKnowledgeWrap">
+        <label class="block text-sm font-semibold text-charcoal/80 mt-4 mb-2">Knowledge Base Document <span class="font-normal text-slate-400">(optional — you can also add documents later from the Knowledge Base tab)</span></label>
+        <div id="initialKnowledgeDropzone" class="border-2 border-dashed border-slate-300 rounded-xl p-6 text-center text-slate-500 text-sm cursor-pointer transition hover:border-brand hover:bg-brand/5">Drag &amp; drop PDF/TXT file yahan, ya click karke select karo</div>
+      </div>
       <div class="flex items-center gap-3 mt-5">
         <button id="saveAgentBtn" class="rounded-xl bg-brand hover:bg-brandDark text-white font-semibold px-5 py-2.5 text-sm shadow-lg shadow-brand/30 transition-colors">Create Agent</button>
         <button id="cancelAgentBtn" class="rounded-xl bg-slate-600 hover:bg-slate-500 text-white px-5 py-2.5 text-sm font-semibold transition-colors" style="display:none;">Cancel Edit</button>
@@ -124,6 +129,64 @@
     <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-200">
       <h2 class="text-lg font-bold text-brandDark mb-4">Conversations</h2>
       <div id="convBody"></div>
+    </div>
+  </section>
+
+  <!-- Analytics -->
+  <section id="analytics" class="panel">
+    <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-200 mb-5">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 class="text-lg font-bold text-brandDark mb-1">Analytics</h2>
+          <p class="text-slate-400 text-sm">Chat usage, fallback rate aur top questions ka overview.</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <label for="analyticsPeriod" class="text-sm font-semibold text-charcoal/80">Period</label>
+          <select id="analyticsPeriod" class="border border-slate-300 rounded-xl px-4 py-2 text-sm outline-none focus:border-brand bg-white">
+            <option value="today">Today</option>
+            <option value="week" selected>This Week</option>
+            <option value="month">This Month</option>
+            <option value="all">All Time</option>
+          </select>
+        </div>
+      </div>
+      <div id="analyticsMsg" class="msg"></div>
+    </div>
+
+    <div id="analyticsEmpty" class="empty text-slate-400 text-sm py-3 bg-white rounded-2xl p-6 shadow-sm border border-slate-200" style="display:none;">No data yet — abhi koi message nahi hai.</div>
+
+    <div id="analyticsContent">
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-5">
+        <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-200">
+          <div class="text-xs uppercase tracking-wide text-slate-400 font-semibold mb-2">Total Conversations</div>
+          <div id="statConversations" class="text-3xl font-extrabold text-charcoal">0</div>
+        </div>
+        <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-200">
+          <div class="text-xs uppercase tracking-wide text-slate-400 font-semibold mb-2">Total Messages</div>
+          <div id="statMessages" class="text-3xl font-extrabold text-charcoal">0</div>
+        </div>
+        <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-200">
+          <div class="text-xs uppercase tracking-wide text-slate-400 font-semibold mb-2">Fallback Rate</div>
+          <div id="statFallback" class="text-3xl font-extrabold text-charcoal">0%</div>
+        </div>
+        <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-200">
+          <div class="text-xs uppercase tracking-wide text-slate-400 font-semibold mb-2">Avg Msgs / Conversation</div>
+          <div id="statAvg" class="text-3xl font-extrabold text-charcoal">0</div>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-200">
+          <h3 class="text-sm font-bold text-charcoal mb-4">Conversations per Day (last 7 days)</h3>
+          <div id="analyticsChart"></div>
+          <div id="chartEmpty" class="empty text-slate-400 text-sm py-3" style="display:none;">No data yet</div>
+        </div>
+        <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-200">
+          <h3 class="text-sm font-bold text-charcoal mb-4">Top 5 Questions</h3>
+          <ol id="topQuestionsList" class="list-none space-y-3"></ol>
+          <div id="questionsEmpty" class="empty text-slate-400 text-sm py-3" style="display:none;">No data yet</div>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -172,6 +235,7 @@
       if (tab.dataset.tab === "agents") loadAgents();
       if (tab.dataset.tab === "kb") loadDocuments();
       if (tab.dataset.tab === "history") loadConversations();
+      if (tab.dataset.tab === "analytics") loadAnalytics();
       if (tab.dataset.tab === "keys") loadKeys();
     });
   });
@@ -262,6 +326,7 @@
     $("agentName").value = agent.name;
     $("agentGreeting").value = agent.greeting || "";
     $("agentPrompt").value = agent.system_prompt || "";
+    $("initialKnowledgeWrap").style.display = "none";
     $("agentFormTitle").textContent = "Edit Agent — " + agent.name;
     $("saveAgentBtn").textContent = "Save Changes";
     $("cancelAgentBtn").style.display = "";
@@ -272,12 +337,44 @@
     $("agentName").value = "";
     $("agentGreeting").value = "";
     $("agentPrompt").value = "";
+    createKnowledgeFile = null;
+    $("initialKnowledgeDropzone").textContent = "Drag & drop PDF/TXT file yahan, ya click karke select karo";
+    $("initialKnowledgeWrap").style.display = "";
     $("agentFormTitle").textContent = "Create Agent";
     $("saveAgentBtn").textContent = "Create Agent";
     $("cancelAgentBtn").style.display = "none";
   }
 
   $("cancelAgentBtn").onclick = resetAgentForm;
+
+  let createKnowledgeFile = null;
+  const initialKnowledgeDropzone = $("initialKnowledgeDropzone");
+
+  function selectCreateKnowledgeFile(file) {
+    if (!file) return;
+    if (!/\.(pdf|txt)$/i.test(file.name)) {
+      createKnowledgeFile = null;
+      showMsg($("agentMsg"), "Sirf PDF ya TXT file allow hai.", "err");
+      return;
+    }
+    createKnowledgeFile = file;
+    initialKnowledgeDropzone.textContent = file.name;
+  }
+
+  initialKnowledgeDropzone.addEventListener("click", () => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".pdf,.txt";
+    input.onchange = () => selectCreateKnowledgeFile(input.files[0]);
+    input.click();
+  });
+  ["dragover", "dragenter"].forEach((ev) =>
+    initialKnowledgeDropzone.addEventListener(ev, (e) => { e.preventDefault(); initialKnowledgeDropzone.classList.add("drag"); })
+  );
+  ["dragleave", "drop"].forEach((ev) =>
+    initialKnowledgeDropzone.addEventListener(ev, (e) => { e.preventDefault(); initialKnowledgeDropzone.classList.remove("drag"); })
+  );
+  initialKnowledgeDropzone.addEventListener("drop", (e) => selectCreateKnowledgeFile(e.dataTransfer.files[0]));
 
   $("saveAgentBtn").onclick = async () => {
     const id = $("agentId").value;
@@ -301,12 +398,24 @@
         });
         showMsg($("agentMsg"), "Agent update ho gaya.", "ok");
       } else {
-        await api("/agents", {
+        const createdAgent = await api("/agents", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name, greeting, system_prompt }),
         });
-        showMsg($("agentMsg"), "Agent ban gaya.", "ok");
+        if (createKnowledgeFile) {
+          const formData = new FormData();
+          formData.append("file", createKnowledgeFile);
+          formData.append("agent_id", String(createdAgent.id));
+          try {
+            const uploadData = await api("/upload", { method: "POST", body: formData });
+            showMsg($("agentMsg"), "Agent created and knowledge base uploaded (" + uploadData.chunks_created + " chunks).", "ok");
+          } catch (uploadErr) {
+            showMsg($("agentMsg"), "Agent created, but knowledge base upload failed: " + uploadErr.message + ". Retry from the Knowledge Base tab.", "err");
+          }
+        } else {
+          showMsg($("agentMsg"), "Agent ban gaya.", "ok");
+        }
       }
       resetAgentForm();
       loadAgents();
@@ -417,6 +526,98 @@
     } catch (err) {
       $("convBody").innerHTML = '<div class="text-slate-400 text-sm py-3">Error loading history: ' + err.message + "</div>";
     }
+  }
+
+  // ---------- Analytics ----------
+
+  $("analyticsPeriod").addEventListener("change", loadAnalytics);
+
+  async function loadAnalytics() {
+    try {
+      const period = $("analyticsPeriod").value;
+      const data = await api("/admin/analytics?period=" + period);
+      const hasData = data.total_messages > 0;
+      $("analyticsEmpty").style.display = hasData ? "none" : "block";
+      $("analyticsContent").style.display = hasData ? "" : "none";
+      if (!hasData) return;
+
+      $("statConversations").textContent = data.total_conversations;
+      $("statMessages").textContent = data.total_messages;
+      $("statFallback").textContent = data.fallback_rate + "%";
+      $("statAvg").textContent = data.avg_messages_per_conversation;
+
+      renderAnalyticsChart(data.conversations_per_day);
+      renderTopQuestions(data.top_questions);
+    } catch (err) {
+      $("analyticsEmpty").style.display = "block";
+      $("analyticsEmpty").textContent = "Error loading analytics: " + err.message;
+    }
+  }
+
+  function renderAnalyticsChart(days) {
+    const el = $("analyticsChart");
+    const empty = $("chartEmpty");
+    const allZero = days.every((d) => d.count === 0);
+    empty.style.display = allZero ? "block" : "none";
+    if (allZero) {
+      el.innerHTML = "";
+      return;
+    }
+
+    const W = 640;
+    const H = 220;
+    const padL = 34;
+    const padB = 28;
+    const padT = 16;
+    const max = Math.max(...days.map((d) => d.count), 1);
+
+    let svg = `<svg viewBox="0 0 ${W} ${H}" class="w-full" xmlns="http://www.w3.org/2000/svg">`;
+
+    const innerH = H - padT - padB;
+    for (let i = 0; i <= 4; i++) {
+      const y = padT + innerH - (innerH * i) / 4;
+      const val = Math.round((max * i) / 4);
+      svg += `<line x1="${padL}" y1="${y}" x2="${W - 8}" y2="${y}" stroke="#e2e8f0" stroke-width="1"/>`;
+      svg += `<text x="${padL - 6}" y="${y + 4}" text-anchor="end" font-size="10" fill="#94a3b8">${val}</text>`;
+    }
+
+    const n = days.length;
+    const slot = (W - padL - 8) / n;
+    const barW = Math.min(42, slot * 0.55);
+    days.forEach((d, i) => {
+      const cx = padL + slot * i + slot / 2;
+      const barH = d.count === 0 ? 2 : Math.max((d.count / max) * innerH, 2);
+      const y = padT + innerH - barH;
+      svg += `<rect x="${cx - barW / 2}" y="${y}" width="${barW}" height="${barH}" rx="4" fill="#00C2B8"/>`;
+      svg += `<text x="${cx}" y="${y - 6}" text-anchor="middle" font-size="11" fill="#0BA39B" font-weight="600">${d.count}</text>`;
+      const label = d.date.slice(5).replace("-", "/");
+      svg += `<text x="${cx}" y="${H - 10}" text-anchor="middle" font-size="10" fill="#64748b">${label}</text>`;
+    });
+
+    svg += `</svg>`;
+    el.innerHTML = svg;
+  }
+
+  function renderTopQuestions(questions) {
+    const list = $("topQuestionsList");
+    const empty = $("questionsEmpty");
+    empty.style.display = questions.length ? "none" : "block";
+    list.innerHTML = "";
+    questions.forEach((q, i) => {
+      const li = document.createElement("li");
+      li.className = "flex items-center justify-between gap-3 bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5";
+      const rank = document.createElement("span");
+      rank.className = "text-xs font-bold text-brandDark bg-brand/10 rounded-full px-2.5 py-1";
+      rank.textContent = i + 1;
+      const text = document.createElement("span");
+      text.className = "text-sm text-charcoal flex-1 truncate";
+      text.textContent = q.question;
+      const count = document.createElement("span");
+      count.className = "text-xs font-semibold text-slate-400";
+      count.textContent = q.count + (q.count === 1 ? " time" : " times");
+      li.append(rank, text, count);
+      list.appendChild(li);
+    });
   }
 
   // ---------- API Keys ----------

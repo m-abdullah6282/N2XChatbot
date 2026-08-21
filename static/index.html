@@ -10,41 +10,64 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Sora:wght@600;700;800&display=swap" rel="stylesheet" />
     <script>
         tailwind.config = {
             theme: {
                 extend: {
                     fontFamily: {
-                        sans: ['Inter', 'Poppins', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+                        sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+                        display: ['Sora', 'Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
                     },
                     colors: {
-                        brand: '#00C2B8',
-                        brandDark: '#0BA39B',
-                        charcoal: '#1A1A1A',
+                        brand: '#08B8B5',
+                        brandDark: '#087F7C',
+                        charcoal: '#111827',
                         slate: '#64748B',
+                        main: '#F7FCFC',
+                        grid: '#DCEEEF',
+                        soft: '#D9F7F6',
                     },
                 },
             },
         };
     </script>
+    <style>
+        html { scroll-behavior: smooth; }
+        body { font-size: 16px; font-family: 'Inter', ui-sans-serif, system-ui, sans-serif; }
+        h1, h2, h3, h4 { font-family: 'Sora', 'Inter', ui-sans-serif, system-ui, sans-serif; }
+        h1 { font-weight: 800 !important; letter-spacing: -0.045em; }
+        h2 { font-weight: 700 !important; letter-spacing: -0.035em; }
+        h3 { font-weight: 700; letter-spacing: -0.02em; }
+        h4 { font-weight: 600; }
+        .hero-title {
+            width: 100%;
+            max-width: 1150px;
+            margin-inline: auto;
+            font-size: clamp(2.5rem, 5.6vw, 5.5rem);
+            line-height: 0.98;
+            overflow-wrap: break-word;
+            text-wrap: balance;
+        }
+        ::selection { background: #D9F7F6; color: #111827; }
+    </style>
 </head>
-<body class="font-sans bg-white text-slate antialiased">
+<body class="font-sans bg-main text-slate antialiased">
 
     <!-- ========== NAVIGATION ========== -->
-    <header class="fixed top-0 inset-x-0 z-50 bg-white/80 backdrop-blur-md border-b border-slate-200/60">
-        <nav class="max-w-7xl mx-auto flex items-center justify-between px-6 py-4">
+    <header class="fixed top-0 inset-x-0 z-50 bg-white/90 backdrop-blur-md border-b border-grid shadow-sm shadow-slate-900/[0.03]">
+        <nav class="max-w-7xl mx-auto flex min-h-[60px] items-center justify-between px-5 sm:px-6 py-2.5">
             <!-- Logo -->
             <a href="#home" class="flex items-center gap-3">
-                <div class="w-10 h-10 relative flex items-center justify-center rounded-2xl bg-gradient-to-br from-brand to-cyan-500 text-white font-black text-xs shadow-lg shadow-cyan-500/20">
+                <div class="w-9 h-9 relative flex items-center justify-center rounded-xl bg-brand text-white font-black text-[11px] shadow-lg shadow-brand/20">
                     N2
-                    <span class="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-gradient-to-tr from-teal-400 to-cyan-300 ring-2 ring-white"></span>
+                    <span class="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-soft ring-2 ring-white"></span>
                 </div>
-                <span class="text-lg font-extrabold tracking-tight text-charcoal">n2x<span class="text-brand">System</span></span>
+                <span class="text-[17px] font-extrabold tracking-tight text-charcoal">n2x<span class="text-brand">System</span></span>
             </a>
 
             <!-- Center Links -->
-            <ul class="hidden lg:flex items-center gap-8 text-sm font-medium">
+            <ul class="hidden lg:flex items-center gap-7 text-[15px] font-medium leading-none">
                 <li><a href="#home" class="text-slate hover:text-brand transition-colors">Home</a></li>
                 <li>
                     <a href="#services" class="text-slate hover:text-brand flex items-center gap-1 transition-colors">
@@ -66,38 +89,38 @@
             </ul>
 
             <!-- CTA Button -->
-            <a href="#contact" class="hidden sm:inline-block rounded-full bg-brand text-white px-6 py-2 text-sm font-semibold shadow-lg shadow-brand/30 hover:bg-teal-500 hover:shadow-cyan-500/40 transition-colors">
+            <a href="#contact" class="hidden sm:inline-block rounded-full bg-brand text-white px-5 py-2 text-[15px] font-semibold leading-5 shadow-lg shadow-brand/30 hover:bg-brandDark hover:shadow-brand/40 transition-colors">
                 Get a Quote
             </a>
         </nav>
     </header>
 
     <!-- ========== HERO ========== -->
-    <section id="home" class="relative overflow-hidden pt-40 pb-24">
+    <section id="home" class="relative overflow-hidden pt-20 pb-24">
         <!-- Background grid pattern -->
         <div class="absolute inset-0 opacity-[0.06]"
-             style="background-image: linear-gradient(to right, #1A1A1A 1px, transparent 1px), linear-gradient(to bottom, #1A1A1A 1px, transparent 1px); background-size: 64px 64px;">
+             style="background-image: linear-gradient(to right, #DCEEEF 1px, transparent 1px), linear-gradient(to bottom, #DCEEEF 1px, transparent 1px); background-size: 64px 64px;">
         </div>
-        <!-- Soft teal/cyan blurred gradient overlay -->
-        <div class="absolute -top-32 -left-32 w-[600px] h-[600px] rounded-full bg-cyan-300/40 blur-3xl"></div>
-        <div class="absolute top-20 -right-40 w-[640px] h-[640px] rounded-full bg-teal-300/30 blur-3xl"></div>
-        <div class="absolute bottom-0 left-1/3 w-[480px] h-[480px] rounded-full bg-cyan-200/30 blur-3xl"></div>
+        <!-- Soft teal decorative overlay -->
+        <div class="absolute -top-32 -left-32 w-[600px] h-[600px] rounded-full bg-soft/70 blur-3xl"></div>
+        <div class="absolute top-20 -right-40 w-[640px] h-[640px] rounded-full bg-soft/60 blur-3xl"></div>
+        <div class="absolute bottom-0 left-1/3 w-[480px] h-[480px] rounded-full bg-soft/50 blur-3xl"></div>
 
         <div class="relative max-w-6xl mx-auto px-6 text-center">
             <!-- Badge -->
-            <div class="inline-flex items-center gap-2 px-5 py-2 rounded-full border border-brand/40 bg-brand/10 text-sm font-medium text-teal-700 mb-8">
+            <div class="inline-flex items-center gap-2 px-5 py-2 rounded-full border border-brand/30 bg-soft text-sm font-medium text-brandDark mb-8">
                 🚀 n2xSystem Project Showcase
             </div>
 
             <!-- H1 -->
-            <h1 class="text-4xl md:text-6xl lg:text-7xl font-black text-charcoal leading-[1.05] tracking-tight max-w-4xl mx-auto">
+            <h1 class="hero-title font-extrabold text-charcoal tracking-tight">
                 We Build Digital Products That
-                <span class="text-transparent bg-clip-text bg-gradient-to-r from-teal-500 to-cyan-500">Look Premium</span>
+                <span class="text-brand">Look Premium</span>
                 &amp; Perform Fast.
             </h1>
 
             <!-- Subtext -->
-            <p class="mt-8 max-w-2xl mx-auto text-lg md:text-xl text-slate leading-relaxed">
+            <p class="mt-8 max-w-2xl mx-auto text-[17px] md:text-xl text-slate leading-relaxed">
                 From high-end websites and mobile apps to dashboards, APIs, cloud workflows and product design —
                 our projects are engineered for speed, scalability and business impact.
             </p>
@@ -107,52 +130,52 @@
     <!-- ========== SERVICES ========== -->
     <section id="services" class="relative scroll-mt-24 py-16 px-6">
         <div class="max-w-6xl mx-auto text-center mb-12">
-            <h2 class="text-3xl md:text-4xl font-black text-charcoal tracking-tight">What We Do</h2>
+            <h2 class="text-3xl md:text-4xl font-bold text-charcoal tracking-tight">What We Do</h2>
             <p class="mt-4 max-w-2xl mx-auto text-lg text-slate">End-to-end digital product engineering under one roof — from idea to launch to scale.</p>
         </div>
         <div class="max-w-6xl mx-auto grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-            <div class="bg-white rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all p-8">
+            <div class="bg-white rounded-2xl border border-grid shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all p-8">
                 <div class="w-12 h-12 rounded-xl bg-brand/10 text-brand flex items-center justify-center mb-4">
                     <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.75 3v2.25M15 3v2.25M5.25 8.25h13.5m-15 11.25h16.5a1.5 1.5 0 001.5-1.5V6.75a1.5 1.5 0 00-1.5-1.5H4.5a1.5 1.5 0 00-1.5 1.5V18a1.5 1.5 0 001.5 1.5z"/></svg>
                 </div>
                 <h3 class="text-lg font-bold text-charcoal mb-2">AI Development</h3>
-                <p class="text-sm text-slate leading-relaxed">Agentic systems, LLM integrations and intelligent automation built for the future.</p>
+                <p class="text-[15px] text-slate leading-relaxed">Agentic systems, LLM integrations and intelligent automation built for the future.</p>
             </div>
-            <div class="bg-white rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all p-8">
+            <div class="bg-white rounded-2xl border border-grid shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all p-8">
                 <div class="w-12 h-12 rounded-xl bg-brand/10 text-brand flex items-center justify-center mb-4">
                     <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10.5 1.5H8.25A2.25 2.25 0 006 3.75v16.5a2.25 2.25 0 002.25 2.25h7.5A2.25 2.25 0 0018 20.25V3.75a2.25 2.25 0 00-2.25-2.25H13.5m-3 0V3h3V1.5m-3 0h3m-3 18.75h3"/></svg>
                 </div>
                 <h3 class="text-lg font-bold text-charcoal mb-2">Mobile Apps</h3>
-                <p class="text-sm text-slate leading-relaxed">Fast, beautiful iOS &amp; Android apps with buttery-smooth user experiences.</p>
+                <p class="text-[15px] text-slate leading-relaxed">Fast, beautiful iOS &amp; Android apps with buttery-smooth user experiences.</p>
             </div>
-            <div class="bg-white rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all p-8">
+            <div class="bg-white rounded-2xl border border-grid shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all p-8">
                 <div class="w-12 h-12 rounded-xl bg-brand/10 text-brand flex items-center justify-center mb-4">
                     <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 21a9.004 9.004 0 008.716-6.747M12 21a2.25 2.25 0 01-2.164-1.502M12 21c-.487 0-.943-.132-1.336-.36M21 12a9 9 0 11-18 0"/>
                         <path stroke-linecap="round" stroke-linejoin="round" d="M12 21a9 9 0 010-18m0 0a7 7 0 017 7"/></svg>
                 </div>
                 <h3 class="text-lg font-bold text-charcoal mb-2">Web Development</h3>
-                <p class="text-sm text-slate leading-relaxed">High-performance websites and dashboards engineered for speed and scale.</p>
+                <p class="text-[15px] text-slate leading-relaxed">High-performance websites and dashboards engineered for speed and scale.</p>
             </div>
-            <div class="bg-white rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all p-8">
+            <div class="bg-white rounded-2xl border border-grid shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all p-8">
                 <div class="w-12 h-12 rounded-xl bg-brand/10 text-brand flex items-center justify-center mb-4">
                     <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456z"/></svg>
                 </div>
                 <h3 class="text-lg font-bold text-charcoal mb-2">UI/UX Design</h3>
-                <p class="text-sm text-slate leading-relaxed">Clean, premium interfaces crafted around user behaviour and business goals.</p>
+                <p class="text-[15px] text-slate leading-relaxed">Clean, premium interfaces crafted around user behaviour and business goals.</p>
             </div>
-            <div class="bg-white rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all p-8">
+            <div class="bg-white rounded-2xl border border-grid shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all p-8">
                 <div class="w-12 h-12 rounded-xl bg-brand/10 text-brand flex items-center justify-center mb-4">
                     <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M20.25 8.511c.884.284 1.5 1.128 1.5 2.097v4.286c0 1.136-.847 2.1-1.98 2.193-.34.027-.68.052-1.02.072v3.091l-3-3c-1.354 0-2.694-.055-4.02-.163a2.115 2.115 0 01-.825-.242m9.345-8.334a2.126 2.126 0 00-.476-.095 48.64 48.64 0 00-8.048 0c-1.131.094-1.976 1.057-1.976 2.192v4.286c0 .837.46 1.58 1.155 1.951m9.345-8.334V6.637c0-1.621-1.152-3.026-2.76-3.235A48.455 48.455 0 0011.25 3c-2.115 0-4.198.137-6.24.402-1.608.209-2.76 1.614-2.76 3.235v6.226c0 1.621 1.152 3.026 2.76 3.235.577.075 1.157.14 1.74.194V21l4.155-4.155"/></svg>
                 </div>
                 <h3 class="text-lg font-bold text-charcoal mb-2">ChatGPT Integrations</h3>
-                <p class="text-sm text-slate leading-relaxed">Custom assistants and knowledge bots wired directly into your products.</p>
+                <p class="text-[15px] text-slate leading-relaxed">Custom assistants and knowledge bots wired directly into your products.</p>
             </div>
-            <div class="bg-white rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all p-8">
+            <div class="bg-white rounded-2xl border border-grid shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all p-8">
                 <div class="w-12 h-12 rounded-xl bg-brand/10 text-brand flex items-center justify-center mb-4">
                     <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z"/></svg>
                 </div>
                 <h3 class="text-lg font-bold text-charcoal mb-2">Digital Marketing</h3>
-                <p class="text-sm text-slate leading-relaxed">Growth campaigns that turn quality traffic into revenue.</p>
+                <p class="text-[15px] text-slate leading-relaxed">Growth campaigns that turn quality traffic into revenue.</p>
             </div>
         </div>
     </section>
@@ -160,21 +183,21 @@
     <!-- ========== STATS ========== -->
     <section id="about" class="relative scroll-mt-24 pb-16 px-6">
         <div class="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div class="bg-white rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all p-8 text-center">
+            <div class="bg-white rounded-2xl border border-grid shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all p-8 text-center">
                 <div class="text-5xl font-black text-brand tracking-tight">200+</div>
                 <div class="mt-3 text-sm font-semibold tracking-widest text-charcoal/70 uppercase">Projects Delivered</div>
             </div>
-            <div class="bg-white rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all p-8 text-center">
+            <div class="bg-white rounded-2xl border border-grid shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all p-8 text-center">
                 <div class="text-5xl font-black text-brand tracking-tight">99.9%</div>
                 <div class="mt-3 text-sm font-semibold tracking-widest text-charcoal/70 uppercase">Reliable Delivery</div>
             </div>
-            <div class="bg-white rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all p-8 text-center">
+            <div class="bg-white rounded-2xl border border-grid shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all p-8 text-center">
                 <div class="text-5xl font-black text-brand tracking-tight">24/7</div>
                 <div class="mt-3 text-sm font-semibold tracking-widest text-charcoal/70 uppercase">Client Support</div>
             </div>
         </div>
         <div class="max-w-4xl mx-auto mt-14 text-center">
-            <h2 class="text-2xl md:text-3xl font-black text-charcoal tracking-tight">About N2X System</h2>
+            <h2 class="text-2xl md:text-3xl font-bold text-charcoal tracking-tight">About N2X System</h2>
             <p class="mt-4 text-lg text-slate leading-relaxed">
                 N2X System is a modern software agency combining AI &amp; agentic systems with premium product
                 engineering. We partner with founders and enterprises in Lahore and London to ship products
@@ -186,29 +209,29 @@
     <!-- ========== ACTION CTA ========== -->
     <section id="careers" class="scroll-mt-24 py-14 px-6">
         <div class="text-center">
-            <a href="/portfolio" class="inline-block rounded-full p-[2px] bg-gradient-to-r from-brand via-cyan-400 to-teal-500 shadow-lg shadow-cyan-500/20 hover:shadow-cyan-500/40 hover:scale-105 transition-all">
+            <a href="/portfolio" class="inline-block rounded-full p-[2px] bg-brand shadow-lg shadow-brand/20 hover:shadow-brand/40 hover:scale-105 transition-all">
                 <span class="block rounded-full bg-white text-brand px-8 py-3 text-sm font-semibold hover:bg-transparent hover:text-white">
                     Download Portfolio
                 </span>
             </a>
             <p class="mt-8 max-w-xl mx-auto text-slate">
                 Join us — we're always looking for sharp engineers and designers.
-                Drop your CV at <a class="text-brand font-semibold hover:text-teal-600" href="mailto:info@n2xsystem.com">info@n2xsystem.com</a>.
+                Drop your CV at <a class="text-brand font-semibold hover:text-brandDark" href="mailto:info@n2xsystem.com">info@n2xsystem.com</a>.
             </p>
         </div>
     </section>
 
     <!-- ========== PROJECTS / SHOWCASE ========== -->
-    <section id="projects" class="scroll-mt-24 py-20 px-6 bg-gradient-to-b from-white to-teal-50/40">
+    <section id="projects" class="scroll-mt-24 py-20 px-6 bg-soft/35">
         <div class="max-w-4xl mx-auto text-center">
-            <h2 class="text-3xl md:text-5xl font-black text-charcoal tracking-tight">N2X Digital Experiences</h2>
+            <h2 class="text-3xl md:text-5xl font-bold text-charcoal tracking-tight">N2X Digital Experiences</h2>
             <p class="mt-5 text-lg text-slate leading-relaxed max-w-2xl mx-auto">
                 Scroll to explore — each project is a real product crafted with clean design, smooth
                 interactions and a relentless focus on outcomes.
             </p>
             <div class="mt-10 grid grid-cols-1 sm:grid-cols-2 gap-6 text-left">
-                <div class="bg-white rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-xl transition-all overflow-hidden">
-                    <div class="h-40 bg-gradient-to-br from-brand/30 to-cyan-200/40 flex items-center justify-center">
+                <div class="bg-white rounded-2xl border border-grid shadow-sm hover:shadow-xl transition-all overflow-hidden">
+                    <div class="h-40 bg-soft flex items-center justify-center">
                         <span class="font-black text-5xl text-brand/70">AI</span>
                     </div>
                     <div class="p-6">
@@ -216,8 +239,8 @@
                         <p class="text-sm text-slate mt-2 leading-relaxed">Agentic support bot with a custom knowledge base, multi-agent routing and an admin panel with analytics.</p>
                     </div>
                 </div>
-                <div class="bg-white rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-xl transition-all overflow-hidden">
-                    <div class="h-40 bg-gradient-to-br from-teal-400/40 to-cyan-300/40 flex items-center justify-center">
+                <div class="bg-white rounded-2xl border border-grid shadow-sm hover:shadow-xl transition-all overflow-hidden">
+                    <div class="h-40 bg-brand/15 flex items-center justify-center">
                         <span class="font-black text-5xl text-brand/70">UI</span>
                     </div>
                     <div class="p-6">
@@ -237,9 +260,9 @@
                 <!-- Col 1: Brand -->
                 <div>
                     <div class="flex items-center gap-3 mb-5">
-                        <div class="w-10 h-10 relative flex items-center justify-center rounded-2xl bg-gradient-to-br from-brand to-cyan-500 text-white font-black text-xs shadow-lg shadow-cyan-500/20">
+                        <div class="w-10 h-10 relative flex items-center justify-center rounded-2xl bg-brand text-white font-black text-xs shadow-lg shadow-brand/20">
                             N2
-                            <span class="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-gradient-to-tr from-teal-400 to-cyan-300 ring-2 ring-charcoal"></span>
+                            <span class="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-soft ring-2 ring-charcoal"></span>
                         </div>
                         <span class="text-lg font-extrabold tracking-tight text-white">n2x<span class="text-brand">System</span></span>
                     </div>
@@ -321,7 +344,7 @@
                     <a href="#" class="hover:text-brand transition-colors">Terms of Service</a>
                     <a href="/admin" class="hover:text-brand transition-colors">Admin</a>
                 </div>
-                <a href="#home" class="flex items-center gap-1.5 text-brand font-medium hover:text-teal-400 transition-colors">
+                <a href="#home" class="flex items-center gap-1.5 text-brand font-medium hover:text-brandDark transition-colors">
                     Back to top
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 15l7-7 7 7"/></svg>
                 </a>
@@ -333,6 +356,6 @@
     <script>
         window.N2XChatConfig = { apiBase: "" };
     </script>
-    <script src="/static/widget.js?v=3"></script>
+    <script src="/static/widget.js?v=8"></script>
 </body>
 </html>

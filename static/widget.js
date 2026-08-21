@@ -28,10 +28,10 @@
   style.id = STYLE_ID;
   style.textContent =
     "#n2x-widget * { box-sizing: border-box; margin: 0; padding: 0; font-family: Arial, Helvetica, sans-serif; }" +
-    "#n2x-widget { position: fixed; bottom: 20px; right: 20px; z-index: 999999; font-size: 14px; }" +
+    "#n2x-widget { position: fixed; right: 24px; bottom: 24px; z-index: 999999; font-size: 14px; }" +
     "#n2x-launcher { width: 60px; height: 60px; border-radius: 50%; border: none; cursor: pointer; background: #00C2B8; color: #fff; box-shadow: 0 4px 16px rgba(0, 194, 184, 0.4); display: flex; align-items: center; justify-content: center; transition: transform 0.15s ease; }" +
     "#n2x-launcher:hover { transform: scale(1.08); }" +
-    "#n2x-panel { position: fixed; bottom: 92px; right: 20px; width: 360px; max-width: calc(100vw - 40px); height: 520px; max-height: calc(100vh - 120px); background: #fff; border-radius: 14px; box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25); display: flex; flex-direction: column; overflow: hidden; border: 1px solid #e5e7eb; }" +
+    "#n2x-panel { position: fixed; right: 96px; bottom: 24px; width: 320px; max-width: calc(100vw - 104px); height: 360px; max-height: calc(100dvh - 84px); background: #fff; border-radius: 14px; box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25); display: flex; flex-direction: column; overflow: hidden; border: 1px solid #e5e7eb; }" +
     "#n2x-panel.hidden { display: none; }" +
     "#n2x-header { background: #00C2B8; color: #fff; padding: 14px 16px; display: flex; align-items: center; gap: 10px; }" +
     "#n2x-header .dot { width: 9px; height: 9px; border-radius: 50%; background: #34d399; flex-shrink: 0; }" +
@@ -48,7 +48,7 @@
     "#n2x-input:focus { border-color: #00C2B8; }" +
     "#n2x-send { background: #00C2B8; color: #fff; border: none; border-radius: 8px; padding: 0 18px; font-size: 14px; font-weight: 600; cursor: pointer; }" +
     "#n2x-send:hover { background: #0d9488; }" +
-    "@media (max-width: 480px) { #n2x-panel { right: 10px; bottom: 80px; width: calc(100vw - 20px); } }";
+    "@media (max-width: 480px) { #n2x-widget { right: 12px; bottom: 12px; } #n2x-panel { right: 84px; bottom: 12px; width: calc(100vw - 96px); height: 340px; max-height: calc(100dvh - 84px); } }";
 
   document.head.appendChild(style);
 

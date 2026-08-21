@@ -1,0 +1,88 @@
+Traceback (most recent call last):
+  File "D:\N2X\knowledge-chatbot\venv\Lib\site-packages\httpx\_transports\default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "D:\N2X\knowledge-chatbot\venv\Lib\site-packages\httpx\_transports\default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\N2X\knowledge-chatbot\venv\Lib\site-packages\httpcore\_sync\connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "D:\N2X\knowledge-chatbot\venv\Lib\site-packages\httpcore\_sync\connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\N2X\knowledge-chatbot\venv\Lib\site-packages\httpcore\_sync\http_proxy.py", line 288, in handle_request
+    connect_response = self._connection.handle_request(
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\N2X\knowledge-chatbot\venv\Lib\site-packages\httpcore\_sync\connection.py", line 101, in handle_request
+    raise exc
+  File "D:\N2X\knowledge-chatbot\venv\Lib\site-packages\httpcore\_sync\connection.py", line 78, in handle_request
+    stream = self._connect(request)
+             ^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\N2X\knowledge-chatbot\venv\Lib\site-packages\httpcore\_sync\connection.py", line 124, in _connect
+    stream = self._network_backend.connect_tcp(**kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\N2X\knowledge-chatbot\venv\Lib\site-packages\httpcore\_backends\sync.py", line 207, in connect_tcp
+    with map_exceptions(exc_map):
+  File "C:\Users\Abdullah\AppData\Local\Programs\Python\Python311\Lib\contextlib.py", line 158, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "D:\N2X\knowledge-chatbot\venv\Lib\site-packages\httpcore\_exceptions.py", line 14, in map_exceptions
+    raise to_exc(exc) from exc
+httpcore.ConnectError: [WinError 10061] No connection could be made because the target machine actively refused it
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "D:\N2X\knowledge-chatbot\venv\Lib\site-packages\qdrant_client\http\api_client.py", line 106, in send_inner
+    response = self._client.send(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\N2X\knowledge-chatbot\venv\Lib\site-packages\httpx\_client.py", line 914, in send
+    response = self._send_handling_auth(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\N2X\knowledge-chatbot\venv\Lib\site-packages\httpx\_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\N2X\knowledge-chatbot\venv\Lib\site-packages\httpx\_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\N2X\knowledge-chatbot\venv\Lib\site-packages\httpx\_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\N2X\knowledge-chatbot\venv\Lib\site-packages\httpx\_transports\default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+  File "C:\Users\Abdullah\AppData\Local\Programs\Python\Python311\Lib\contextlib.py", line 158, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "D:\N2X\knowledge-chatbot\venv\Lib\site-packages\httpx\_transports\default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.ConnectError: [WinError 10061] No connection could be made because the target machine actively refused it
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "D:\N2X\knowledge-chatbot\scripts\debug_retrieval.py", line 54, in <module>
+    main()
+  File "D:\N2X\knowledge-chatbot\scripts\debug_retrieval.py", line 39, in main
+    results = client.search(
+              ^^^^^^^^^^^^^^
+  File "D:\N2X\knowledge-chatbot\venv\Lib\site-packages\qdrant_client\qdrant_client.py", line 387, in search
+    return self._client.search(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "D:\N2X\knowledge-chatbot\venv\Lib\site-packages\qdrant_client\qdrant_remote.py", line 563, in search
+    search_result = self.http.points_api.search_points(
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\N2X\knowledge-chatbot\venv\Lib\site-packages\qdrant_client\http\api\points_api.py", line 1820, in search_points
+    return self._build_for_search_points(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\N2X\knowledge-chatbot\venv\Lib\site-packages\qdrant_client\http\api\points_api.py", line 852, in _build_for_search_points
+    return self.api_client.request(
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\N2X\knowledge-chatbot\venv\Lib\site-packages\qdrant_client\http\api_client.py", line 79, in request
+    return self.send(request, type_)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\N2X\knowledge-chatbot\venv\Lib\site-packages\qdrant_client\http\api_client.py", line 96, in send
+    response = self.middleware(request, self.send_inner)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\N2X\knowledge-chatbot\venv\Lib\site-packages\qdrant_client\http\api_client.py", line 205, in __call__
+    return call_next(request)
+           ^^^^^^^^^^^^^^^^^^
+  File "D:\N2X\knowledge-chatbot\venv\Lib\site-packages\qdrant_client\http\api_client.py", line 108, in send_inner
+    raise ResponseHandlingException(e)
+qdrant_client.http.exceptions.ResponseHandlingException: [WinError 10061] No connection could be made because the target machine actively refused it

@@ -1,4 +1,5 @@
 import os
+import logging
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
@@ -9,6 +10,11 @@ from app.routes import upload, chat, admin
 from app.services.auth import COOKIE_NAME, is_authenticated
 
 PORTFOLIO_PATH = "uploaded_files/N2X-System-Portfolio.pdf"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 
 init_db()
 

@@ -1,6 +1,9 @@
 import os
+import re
 import sqlite3
 import uuid
+from collections import Counter
+from datetime import datetime, timedelta
 
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "chatbot.db")
 
@@ -9,6 +12,16 @@ def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(r[1] == column for r in rows)
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str):
+    if not _column_exists(conn, table, column):
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def init_db():
@@ -20,6 +33,7 @@ def init_db():
                 session_id TEXT NOT NULL,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
+                was_fallback INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             )
             """
@@ -54,10 +68,19 @@ def init_db():
             """
         )
 
+        _ensure_column(conn, "messages", "was_fallback", "INTEGER NOT NULL DEFAULT 0")
+
     seed_default_agent()
 
 
-DEFAULT_SYSTEM_PROMPT = """You are N2X System's friendly chat assistant. Follow these rules:
+NO_RELEVANT_CONTEXT_FOUND = "NO_RELEVANT_CONTEXT_FOUND"
+
+FALLBACK_MESSAGE = (
+    "Mujhe iski exact information nahi mili. "
+    "Main aapko hamare team se connect kar deta hoon."
+)
+
+DEFAULT_SYSTEM_PROMPT = f"""You are N2X System's friendly chat assistant. Follow these rules:
 
 1. Language & greeting: Reply in the SAME language the user writes in. If Roman Urdu/Hindi, reply in Roman Urdu/Hindi; if English, reply in English. GREETING RULES: NEVER use "Namaste", "Namastey", "Namaskar" or any Hindi greeting. Always keep it simple and neutral: use "Hi" or "Hello" (optionally "Assalam-o-Alaikum" in Roman Urdu chats). Avoid any religious or region-specific greetings.
 
@@ -67,9 +90,11 @@ DEFAULT_SYSTEM_PROMPT = """You are N2X System's friendly chat assistant. Follow 
 
 4. Be friendly, warm and conversational. Use emojis naturally to make the chat feel lively. 😊
 
-5. Answer using the context below whenever it is relevant. You can also use general knowledge about N2X System as a software development agency (services, projects, contact info).
+5. CLASSIFY the message before answering. If it is a greeting, thanks, farewell, or casual small talk (e.g. "hi", "hello", "salam", "hey", "kya haal hai", "thanks", "bye"), reply naturally, warmly and conversationally — no context is needed for these and you MUST NEVER use the fallback message for them.
 
-6. If you genuinely cannot help, politely say so in the user's language and suggest asking about N2X System's services or projects.
+6. For GENUINE FACTUAL QUESTIONS about N2X System (services, projects, pricing, contact details, etc.): ANSWER ONLY FROM THE CONTEXT BELOW. You MUST NOT use outside knowledge, general knowledge, or anything learned during training for any factual claim. Never guess or make anything up. If the context is exactly "{NO_RELEVANT_CONTEXT_FOUND}", it means no relevant information was found in the knowledge base. In that case, reply with EXACTLY this message and nothing else:
+{FALLBACK_MESSAGE}
+Do NOT attempt to answer the question and do NOT use general knowledge.
 
 7. Keep answers short and to the point (2-4 sentences max).
 
@@ -93,11 +118,11 @@ def seed_default_agent():
             )
 
 
-def save_message(session_id: str, role: str, content: str):
+def save_message(session_id: str, role: str, content: str, was_fallback: int = 0):
     with get_conn() as conn:
         conn.execute(
-            "INSERT INTO messages (session_id, role, content) VALUES (?, ?, ?)",
-            (session_id, role, content),
+            "INSERT INTO messages (session_id, role, content, was_fallback) VALUES (?, ?, ?, ?)",
+            (session_id, role, content, was_fallback),
         )
 
 
@@ -111,6 +136,132 @@ def get_conversations() -> list[dict]:
             """
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Analytics
+# ---------------------------------------------------------------------------
+
+PERIODS = ("today", "week", "month", "all")
+
+
+def _period_cutoff(period: str) -> str | None:
+    """Return the earliest allowed created_at (SQLite datetime string) for a
+    period, or None for 'all'. Days are counted from UTC now, matching the
+    datetime('now') default used by the messages table."""
+    now = datetime.utcnow()
+    if period == "today":
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    elif period == "week":
+        start = now - timedelta(days=7)
+    elif period == "month":
+        start = now - timedelta(days=30)
+    else:
+        return None
+    return start.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _period_condition(period: str) -> tuple[str, list]:
+    cutoff = _period_cutoff(period)
+    if cutoff is None:
+        return "", []
+    return "WHERE created_at >= ?", [cutoff]
+
+
+def get_total_conversations(period: str = "all") -> int:
+    where, params = _period_condition(period)
+    with get_conn() as conn:
+        row = conn.execute(
+            f"SELECT COUNT(DISTINCT session_id) AS c FROM messages {where}",
+            params,
+        ).fetchone()
+    return row["c"] if row else 0
+
+
+def get_total_messages(period: str = "all") -> int:
+    where, params = _period_condition(period)
+    with get_conn() as conn:
+        row = conn.execute(
+            f"SELECT COUNT(*) AS c FROM messages {where}",
+            params,
+        ).fetchone()
+    return row["c"] if row else 0
+
+
+def get_fallback_rate(period: str = "all") -> float:
+    where, params = _period_condition(period)
+    where_clause = "WHERE role = 'assistant'"
+    if where:
+        where_clause += " AND created_at >= ?"
+    with get_conn() as conn:
+        row = conn.execute(
+            f"""
+            SELECT
+                COUNT(*) AS total,
+                SUM(CASE WHEN was_fallback = 1 THEN 1 ELSE 0 END) AS fallbacks
+            FROM messages
+            {where_clause}
+            """,
+            params,
+        ).fetchone()
+    total = row["total"] if row else 0
+    fallbacks = row["fallbacks"] if row else 0
+    if not total:
+        return 0.0
+    return round(fallbacks / total * 100, 2)
+
+
+def get_avg_messages_per_conversation(period: str = "all") -> float:
+    total_messages = get_total_messages(period)
+    total_conversations = get_total_conversations(period)
+    if not total_conversations:
+        return 0.0
+    return round(total_messages / total_conversations, 2)
+
+
+def get_top_questions(limit: int = 5) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT content FROM messages WHERE role = 'user'"
+        ).fetchall()
+    counts: Counter = Counter()
+    for row in rows:
+        normalized = _normalize_question(row["content"])
+        if normalized:
+            counts[normalized] += 1
+    return [
+        {"question": question, "count": count}
+        for question, count in counts.most_common(limit)
+    ]
+
+
+def _normalize_question(text: str) -> str:
+    lower = text.lower().strip()
+    return re.sub(r"[^a-z0-9\s]", "", lower).strip()
+
+
+def get_conversations_per_day(last_n_days: int = 7) -> list[dict]:
+    start = (datetime.utcnow() - timedelta(days=last_n_days - 1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    start_str = start.strftime("%Y-%m-%d %H:%M:%S")
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT date(created_at) AS day, COUNT(DISTINCT session_id) AS c
+            FROM messages
+            WHERE created_at >= ?
+            GROUP BY day
+            """,
+            [start_str],
+        ).fetchall()
+    by_day = {r["day"]: r["c"] for r in rows}
+
+    result = []
+    for i in range(last_n_days):
+        day = (start + timedelta(days=i)).strftime("%Y-%m-%d")
+        result.append({"date": day, "count": by_day.get(day, 0)})
+    return result
 
 
 def create_api_key(label: str) -> str:

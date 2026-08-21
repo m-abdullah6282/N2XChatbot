@@ -7,6 +7,12 @@ from pydantic import BaseModel
 
 from app.db import (
     get_conversations,
+    get_total_conversations,
+    get_total_messages,
+    get_fallback_rate,
+    get_avg_messages_per_conversation,
+    get_top_questions,
+    get_conversations_per_day,
     create_api_key,
     list_api_keys,
     delete_api_key,
@@ -104,6 +110,20 @@ def delete_document(filename: str, agent_id: int | None = None):
 @router.get("/conversations", dependencies=[Depends(require_admin)])
 def conversations():
     return get_conversations()
+
+
+@router.get("/admin/analytics", dependencies=[Depends(require_admin)])
+def analytics(period: str = "week"):
+    if period not in ("today", "week", "month", "all"):
+        period = "week"
+    return {
+        "total_conversations": get_total_conversations(period),
+        "total_messages": get_total_messages(period),
+        "fallback_rate": get_fallback_rate(period),
+        "avg_messages_per_conversation": get_avg_messages_per_conversation(period),
+        "top_questions": get_top_questions(5),
+        "conversations_per_day": get_conversations_per_day(7),
+    }
 
 
 @router.post("/api-keys", dependencies=[Depends(require_admin)])
