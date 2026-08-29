@@ -8,6 +8,29 @@ def extract_text_from_pdf(file_path: str) -> str:
         text += page.extract_text() + "\n"
     return text
 
+
+def extract_text_from_pdf_ocr(file_path: str) -> str:
+    """OCR fallback for scanned/image-only PDFs via pdf2image + pytesseract.
+
+    Returns the recognized text, or "" when the OCR toolchain (the Tesseract
+    and Poppler binaries) is not installed or the pages carry no recognizable
+    text. Callers must treat "" exactly like an extraction failure — this is
+    best-effort and must never crash the upload flow."""
+    try:
+        from pdf2image import convert_from_path
+        import pytesseract
+
+        pages = convert_from_path(file_path)
+        try:
+            return "\n".join(pytesseract.image_to_string(page) for page in pages)
+        finally:
+            for page in pages:
+                if hasattr(page, "close"):
+                    page.close()
+    except Exception:
+        return ""
+
+
 def chunk_text(text: str, chunk_size: int = 1500, overlap: int = 0) -> list[str]:
     """Split knowledge documents at headings instead of fixed character offsets.
 

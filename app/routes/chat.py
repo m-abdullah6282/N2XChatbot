@@ -7,12 +7,13 @@ from fastapi import APIRouter
 from app.models.schemas import ChatRequest
 from app.services.embeddings import generate_embedding
 from app.services.vector_store import search_similar_chunks
-from app.services.llm import generate_answer
+from app.services.llm import generate_answer, truncate_chunks
 from app.db import (
     save_message,
     get_agent,
     get_session_messages,
     create_or_update_handoff,
+    build_system_prompt,
     DEFAULT_SYSTEM_PROMPT,
     FALLBACK_MESSAGE,
     NO_RELEVANT_CONTEXT_FOUND,
@@ -37,19 +38,19 @@ def _casual_response(question: str) -> str | None:
     }
 
     if words and words <= {"thanks", "thank", "you", "so", "much", "shukriya", "jazakallah"}:
-        return "Khushi hui! Aap ko N2X System ke bare mein koi bhi sawal ho to pooch sakte hain."
+        return "Khushi hui! Aur koi sawal ho to zaroor poochiye."
     if words and words <= {"bye", "goodbye", "allahhafiz", "khudahafiz", "ok", "okay"}:
         return "Allah Hafiz! Jab bhi zaroorat ho, hum yahan hain."
     if words and words <= greeting_words or normalized in {"kya haal hai", "how are you", "whats up"}:
         if normalized in {"hi", "hello", "hey", "good morning", "good evening"}:
-            return "Hello! How can I help you with N2X System today?"
-        return "Hi! Main theek hoon. N2X System ke bare mein aap ko kis cheez mein madad chahiye?"
+            return "Hello! Main aapki kaise madad kar sakta hoon?"
+        return "Hi! Main theek hoon. Aap kis cheez mein madad chahiye?"
     return None
 
 
-def _generate_answer_or_fallback(question: str, context: str, fallback: str) -> str:
+def _generate_answer_or_fallback(question: str, context: str, system_prompt: str, fallback: str) -> str:
     try:
-        return generate_answer(question, context)
+        return generate_answer(question, context, system_prompt=system_prompt)
     except Exception as exc:
         logger.exception("LLM request failed")
         logger.error("LLM request failed -> %s: %s", type(exc).__name__, exc)
@@ -105,26 +106,38 @@ async def chat(request: ChatRequest):
     if not retrieval_available:
         return _reply(RETRIEVAL_UNAVAILABLE_MESSAGE)
 
-    # 3. Combine only retrieved chunks into the context.
+    # 3. Combine only retrieved chunks into the context, keeping the most
+    # relevant (top-scoring) chunks and truncating everything beyond
+    # MAX_CONTEXT_CHARS so the request never exceeds the LLM provider's size
+    # limit (oversized bodies surface as HTTP 413).
     relevant_chunks = list(relevant_chunks)
 
     sources_used = 0
     if relevant_chunks:
-        context = "\n\n".join(relevant_chunks)
-        sources_used = len(relevant_chunks)
+        selected = truncate_chunks(relevant_chunks)
+        if selected:
+            context = "\n\n".join(selected)
+            sources_used = len(selected)
+        else:
+            context = NO_RELEVANT_CONTEXT_FOUND
     else:
         context = NO_RELEVANT_CONTEXT_FOUND
 
-    # 4. Use the selected agent's system prompt (if any), else the default
+    # 4. Build the agent's system prompt: the stored prompt is already the
+    # resolved one (the Advanced custom override when present, otherwise the
+    # universal template filled with name/description). Fall back to a fresh
+    # template build only if nothing is stored.
     system_prompt = DEFAULT_SYSTEM_PROMPT
     if request.agent_id is not None:
         agent = get_agent(request.agent_id)
         if agent:
-            system_prompt = agent["system_prompt"]
+            system_prompt = agent["system_prompt"] or build_system_prompt(
+                agent["name"], agent.get("description") or ""
+            )
 
     # 5. Ask LLM
     answer = _generate_answer_or_fallback(
-        request.question, context, RETRIEVAL_UNAVAILABLE_MESSAGE
+        request.question, context, system_prompt, RETRIEVAL_UNAVAILABLE_MESSAGE
     )
 
     was_fallback = 1 if answer == FALLBACK_MESSAGE else 0

@@ -67,6 +67,7 @@
   <button class="tab font-semibold py-3 px-5 text-sm whitespace-nowrap cursor-pointer" data-tab="handoffs" id="tab-handoffs">Needs Attention</button>
   <button class="tab font-semibold py-3 px-5 text-sm whitespace-nowrap cursor-pointer" data-tab="analytics" id="tab-analytics">Analytics</button>
   <button class="tab font-semibold py-3 px-5 text-sm whitespace-nowrap cursor-pointer" data-tab="keys" id="tab-keys">API Keys</button>
+  <button class="tab font-semibold py-3 px-5 text-sm whitespace-nowrap cursor-pointer" data-tab="admins" id="tab-admins" style="display:none;">Admins</button>
 </div>
 
 <main class="max-w-5xl mx-auto px-6 py-6">
@@ -78,10 +79,22 @@
       <input id="agentId" type="hidden" />
       <label class="block text-sm font-semibold text-charcoal/80 mt-4 mb-2" for="agentName">Name</label>
       <input id="agentName" class="w-full border border-slate-300 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20" placeholder="e.g. Sales Assistant" />
-      <label class="block text-sm font-semibold text-charcoal/80 mt-4 mb-2" for="agentGreeting">Greeting (pehla message jo visitor ko dikhega)</label>
+      <label class="block text-sm font-semibold text-charcoal/80 mt-4 mb-2" for="agentSlug">Slug <span class="font-normal text-slate-400">(URL: /chat/&lt;slug&gt; — name likhte hi auto-suggest hota hai, khud bhi edit kar sakte ho)</span></label>
+      <input id="agentSlug" class="w-full border border-slate-300 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20" placeholder="sales-assistant" />
+      <label class="block text-sm font-semibold text-charcoal/80 mt-4 mb-2" for="agentDescription">Description / Purpose <span class="font-normal text-slate-400">(ek line — kya karta hai, kya knowledge dega)</span></label>
+      <input id="agentDescription" class="w-full border border-slate-300 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20" placeholder="e.g. Cricket expert bot, Sales assistant for pricing" /> 
+      <label class="block text-sm font-semibold text-charcoal/80 mt-4 mb-2" for="agentGreeting">Greeting Message <span class="font-normal text-slate-400">(pehla message jo visitor ko dikhega)</span></label>
       <input id="agentGreeting" class="w-full border border-slate-300 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20" placeholder="Hello! Main aapki kaise madad kar sakta hoon?" />
-      <label class="block text-sm font-semibold text-charcoal/80 mt-4 mb-2" for="agentPrompt">Instructions / System Prompt</label>
-      <textarea id="agentPrompt" class="w-full border border-slate-300 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20 resize-y min-h-[120px] font-mono" placeholder="You are ... Follow these rules: ..."></textarea>
+      <div class="mt-4 border border-slate-200 rounded-xl">
+        <button id="advancedToggle" class="w-full flex items-center justify-between px-4 py-3 text-left text-sm font-semibold text-charcoal/80 hover:bg-slate-50 rounded-xl cursor-pointer" type="button">
+          <span>Advanced: Custom System Prompt <span class="font-normal text-slate-400">(optional — power users)</span></span>
+          <span id="advancedChevron">▸</span>
+        </button>
+        <div id="advancedWrap" class="hidden px-4 pb-4">
+          <label class="block text-xs font-semibold text-charcoal/70 mt-2 mb-1" for="agentPrompt">Custom System Prompt <span class="font-normal text-slate-400">(khaali chhoro to universal template + agent name/description automatically ban jaye ga)</span></label>
+          <textarea id="agentPrompt" class="w-full border border-slate-300 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20 resize-y min-h-[120px] font-mono" placeholder="Optional: full custom prompt likho. Default: universal rules + name + description."></textarea>
+        </div>
+      </div>
       <div id="initialKnowledgeWrap">
         <label class="block text-sm font-semibold text-charcoal/80 mt-4 mb-2">Knowledge Base Document <span class="font-normal text-slate-400">(optional — you can also add documents later from the Knowledge Base tab)</span></label>
         <div id="initialKnowledgeDropzone" class="border-2 border-dashed border-slate-300 rounded-xl p-6 text-center text-slate-500 text-sm cursor-pointer transition hover:border-brand hover:bg-brand/5">Drag &amp; drop PDF/TXT file yahan, ya click karke select karo</div>
@@ -223,6 +236,31 @@
     </div>
   </section>
 
+  <!-- Admins -->
+  <section id="admins" class="panel">
+    <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-200 mb-5">
+      <h2 class="text-lg font-bold text-brandDark mb-4">Add New Admin</h2>
+      <label class="block text-sm font-semibold text-charcoal/80 mt-4 mb-2" for="adminUsername">Username</label>
+      <input id="adminUsername" class="w-full border border-slate-300 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20" placeholder="e.g. support_admin" autocomplete="off" />
+      <label class="block text-sm font-semibold text-charcoal/80 mt-4 mb-2" for="adminPassword">Password <span class="font-normal text-slate-400">(kam se kam 6 characters)</span></label>
+      <input id="adminPassword" type="password" class="w-full border border-slate-300 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20" placeholder="••••••••" autocomplete="new-password" />
+      <label class="block text-sm font-semibold text-charcoal/80 mt-4 mb-2" for="adminRole">Role</label>
+      <select id="adminRole" class="w-full sm:w-72 border border-slate-300 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-brand bg-white">
+        <option value="admin">Admin</option>
+        <option value="super_admin">Super Admin</option>
+      </select>
+      <div class="flex items-center gap-3 mt-5">
+        <button id="addAdminBtn" class="rounded-xl bg-brand hover:bg-brandDark text-white font-semibold px-5 py-2.5 text-sm shadow-lg shadow-brand/30 transition-colors">Add Admin</button>
+      </div>
+      <div id="adminMsg" class="msg"></div>
+    </div>
+    <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-200">
+      <h2 class="text-lg font-bold text-brandDark mb-4">Admin Users</h2>
+      <div id="adminsList"></div>
+      <div id="adminsEmpty" class="empty text-slate-400 text-sm py-3" style="display:none;">Abhi koi admin user nahi hai.</div>
+    </div>
+  </section>
+
 </main>
 
 <style>
@@ -249,6 +287,7 @@
       if (tab.dataset.tab === "handoffs") loadHandoffs();
       if (tab.dataset.tab === "analytics") loadAnalytics();
       if (tab.dataset.tab === "keys") loadKeys();
+      if (tab.dataset.tab === "admins") loadAdmins();
     });
   });
 
@@ -274,10 +313,18 @@
     window.location.href = "/login";
   };
 
+  let currentUserRole = null;
+
   async function checkAuth() {
     try {
       const data = await fetch("/admin/check").then((r) => r.json());
       if (!data.authenticated) window.location.href = "/login";
+      currentUserRole = data.role || "admin";
+      if (currentUserRole === "super_admin") {
+        $("tab-admins").style.display = "";
+        loadAdmins();
+      }
+      loadAgents();
     } catch (e) {
       window.location.href = "/login";
     }
@@ -301,15 +348,38 @@
         opt.value = a.id;
         opt.textContent = a.name;
         sel.appendChild(opt);
+        const ownerTag = (currentUserRole === "super_admin" && a.owner_username)
+          ? `<span class="text-xs font-semibold text-indigo-700 bg-indigo-100 rounded-full px-2 py-0.5 ml-1">Owner: ${a.owner_username}</span>`
+          : "";
         const row = document.createElement("div");
         row.className = "agent-row";
+        const agentUrl = window.location.origin + "/chat/" + (a.slug || "");
         row.innerHTML = `
-          <div class="name">${a.name}</div>
+          <div class="name">${a.name}${ownerTag}</div>
+          ${a.description ? `<div class="desc text-xs text-slate-500 mt-0.5">${a.description}</div>` : ""}
           <div class="greet">Greeting: ${a.greeting || "—"}</div>
+          <div class="slug-url flex items-center gap-2 my-2">
+            <span class="key-value text-xs" style="padding:3px 8px;">${a.slug ? agentUrl : "Slug assign hone par URL yahan aayega"}</span>
+            <button class="copy-url bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg px-2 py-1 text-xs font-semibold" ${a.slug ? "" : "disabled"}>Copy</button>
+          </div>
           <div class="flex items-center gap-3">
             <button class="bg-brand hover:bg-brandDark text-white rounded-lg px-3 py-1.5 text-xs font-semibold">Edit</button>
             <button class="btn danger text-white rounded-lg px-3 py-1.5">Delete</button>
           </div>`;
+        row.querySelector(".copy-url").onclick = async () => {
+          try {
+            await navigator.clipboard.writeText(agentUrl);
+            showMsg($("agentMsg"), "Chat URL copy ho gaya.", "ok");
+          } catch (e) {
+            const t = document.createElement("textarea");
+            t.value = agentUrl;
+            document.body.appendChild(t);
+            t.select();
+            document.execCommand("copy");
+            document.body.removeChild(t);
+            showMsg($("agentMsg"), "Chat URL copy ho gaya.", "ok");
+          }
+        };
         row.querySelectorAll("button")[0].onclick = async () => {
           try {
             const detail = await api("/agents/" + a.id);
@@ -336,8 +406,20 @@
   function startEditAgent(agent) {
     $("agentId").value = agent.id;
     $("agentName").value = agent.name;
+    $("agentDescription").value = agent.description || "";
     $("agentGreeting").value = agent.greeting || "";
+    $("agentSlug").value = agent.slug || "";
+    slugTouched = true;
     $("agentPrompt").value = agent.system_prompt || "";
+    if (agent.has_custom_prompt) {
+      $("advancedWrap").classList.remove("hidden");
+      $("advancedChevron").textContent = "▾";
+      customPromptActive = true;
+    } else {
+      $("advancedWrap").classList.add("hidden");
+      $("advancedChevron").textContent = "▸";
+      customPromptActive = false;
+    }
     $("initialKnowledgeWrap").style.display = "none";
     $("agentFormTitle").textContent = "Edit Agent — " + agent.name;
     $("saveAgentBtn").textContent = "Save Changes";
@@ -347,8 +429,14 @@
   function resetAgentForm() {
     $("agentId").value = "";
     $("agentName").value = "";
+    $("agentDescription").value = "";
     $("agentGreeting").value = "";
+    $("agentSlug").value = "";
+    slugTouched = false;
     $("agentPrompt").value = "";
+    customPromptActive = false;
+    $("advancedWrap").classList.add("hidden");
+    $("advancedChevron").textContent = "▸";
     createKnowledgeFile = null;
     $("initialKnowledgeDropzone").textContent = "Drag & drop PDF/TXT file yahan, ya click karke select karo";
     $("initialKnowledgeWrap").style.display = "";
@@ -358,6 +446,33 @@
   }
 
   $("cancelAgentBtn").onclick = resetAgentForm;
+
+  // Advanced: custom system prompt. Hidden by default; only agents that
+  // already carry a manual (non-template) prompt open it, so legacy/custom
+  // prompts survive. Opening/editing it opts the save into sending it.
+  let customPromptActive = false;
+  $("advancedToggle").addEventListener("click", function () {
+    const hiddenWrap = $("advancedWrap").classList.toggle("hidden");
+    $("advancedChevron").textContent = hiddenWrap ? "▸" : "▾";
+    customPromptActive = true;
+  });
+  $("agentPrompt").addEventListener("input", function () {
+    customPromptActive = true;
+  });
+
+  // Slug auto-suggest: mirrors the agent name until the admin edits the slug
+  // field manually. Manual edits stop the auto-suggest until the form reset.
+  let slugTouched = false;
+  function slugifyName(name) {
+    return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  }
+  $("agentName").addEventListener("input", function () {
+    if (slugTouched) return;
+    $("agentSlug").value = slugifyName($("agentName").value);
+  });
+  $("agentSlug").addEventListener("input", function () {
+    slugTouched = true;
+  });
 
   let createKnowledgeFile = null;
   const initialKnowledgeDropzone = $("initialKnowledgeDropzone");
@@ -391,14 +506,12 @@
   $("saveAgentBtn").onclick = async () => {
     const id = $("agentId").value;
     const name = $("agentName").value.trim();
+    const description = $("agentDescription").value.trim();
     const greeting = $("agentGreeting").value.trim();
-    const system_prompt = $("agentPrompt").value.trim();
+    const slug = $("agentSlug").value.trim();
+    const system_prompt = customPromptActive ? $("agentPrompt").value.trim() : "";
     if (!name) {
       showMsg($("agentMsg"), "Pehle agent ka naam likho.", "err");
-      return;
-    }
-    if (!system_prompt) {
-      showMsg($("agentMsg"), "Agent ke liye instructions/system prompt likho.", "err");
       return;
     }
     try {
@@ -406,14 +519,14 @@
         await api("/agents/" + id, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name, greeting, system_prompt }),
+          body: JSON.stringify({ name, description, greeting, slug, system_prompt }),
         });
         showMsg($("agentMsg"), "Agent update ho gaya.", "ok");
       } else {
         const createdAgent = await api("/agents", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name, greeting, system_prompt }),
+          body: JSON.stringify({ name, description, greeting, slug, system_prompt }),
         });
         if (createKnowledgeFile) {
           const formData = new FormData();
@@ -734,6 +847,131 @@
 
   loadAgents();
   loadDocuments();
+
+  // ---------- Admins ----------
+
+  let currentAdminId = null;
+
+  $("addAdminBtn").onclick = async () => {
+    const username = $("adminUsername").value.trim();
+    const password = $("adminPassword").value;
+    const role = $("adminRole").value;
+    if (!username) {
+      showMsg($("adminMsg"), "Pehle username likho.", "err");
+      return;
+    }
+    if (password.length < 6) {
+      showMsg($("adminMsg"), "Password kam se kam 6 characters ka hona chahiye.", "err");
+      return;
+    }
+    try {
+      await api("/admin/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password, role }),
+      });
+      $("adminUsername").value = "";
+      $("adminPassword").value = "";
+      $("adminRole").value = "admin";
+      showMsg($("adminMsg"), "Admin user ban gaya.", "ok");
+      loadAdmins();
+    } catch (err) {
+      showMsg($("adminMsg"), err.message, "err");
+    }
+  };
+
+  async function loadAdmins() {
+    try {
+      const data = await api("/admin/users");
+      currentAdminId = data.current_user_id;
+      const users = data.users || [];
+      const body = $("adminsList");
+      body.innerHTML = "";
+      $("adminsEmpty").style.display = users.length ? "none" : "block";
+
+      users.forEach((u) => {
+        const isSelf = currentAdminId !== null && u.id === currentAdminId;
+        const isSuper = u.role === "super_admin";
+        const roleBadge = isSuper
+          ? '<span class="text-xs font-semibold text-amber-700 bg-amber-100 rounded-full px-2 py-0.5 ml-1">Super Admin</span>'
+          : '<span class="text-xs font-semibold text-slate-500 bg-slate-100 rounded-full px-2 py-0.5 ml-1">Admin</span>';
+        const row = document.createElement("div");
+        row.className = "admin-row border border-slate-200 rounded-xl p-3.5 mb-2.5";
+        row.innerHTML = `
+          <div class="flex items-center justify-between gap-3 flex-wrap">
+            <div>
+              <div class="text-sm font-bold text-brandDark">${u.username}${isSelf ? ' <span class="text-xs font-semibold text-brandDark bg-brand/10 rounded-full px-2 py-0.5">you</span>' : ""}${roleBadge}</div>
+              <div class="text-xs text-slate-400 mt-0.5">Created: ${u.created_at}</div>
+            </div>
+            <div class="flex items-center gap-2">
+              <button class="chg-pass bg-brand hover:bg-brandDark text-white rounded-lg px-3 py-1.5 text-xs font-semibold">Change Password</button>
+              <button class="btn danger text-white rounded-lg px-3 py-1.5 disabled:opacity-40 disabled:cursor-not-allowed" ${isSelf ? "disabled" : ""}>Delete</button>
+            </div>
+          </div>
+          <div class="change-pass-area hidden mt-3 gap-2 items-center">
+            <input type="password" class="new-pass flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20" placeholder="Naya password — kam se kam 6 characters" autocomplete="new-password" />
+            <button class="save-pass bg-brandDark hover:bg-teal-700 text-white rounded-lg px-4 py-2 text-xs font-semibold">Save</button>
+            <button class="cancel-pass text-slate-400 hover:text-slate-600 text-xs font-semibold">Cancel</button>
+          </div>
+          <div class="pass-note text-xs mt-2" style="display:none;"></div>`;
+
+        row.querySelector(".chg-pass").onclick = () => {
+          const area = row.querySelector(".change-pass-area");
+          const visible = area.classList.toggle("hidden");
+          area.classList.toggle("flex", !visible);
+          row.querySelector(".pass-note").style.display = "none";
+          if (!visible) area.querySelector(".new-pass").focus();
+        };
+        row.querySelector(".cancel-pass").onclick = () => {
+          const area = row.querySelector(".change-pass-area");
+          area.classList.add("hidden");
+          area.classList.remove("flex");
+          area.querySelector(".new-pass").value = "";
+          row.querySelector(".pass-note").style.display = "none";
+        };
+        row.querySelector(".save-pass").onclick = async () => {
+          const input = row.querySelector(".new-pass");
+          const note = row.querySelector(".pass-note");
+          const password = input.value;
+          if (password.length < 6) {
+            note.textContent = "Password kam se kam 6 characters ka hona chahiye.";
+            note.className = "pass-note text-xs mt-2 text-red-600";
+            note.style.display = "block";
+            return;
+          }
+          try {
+            await api("/admin/users/" + u.id + "/change-password", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ password }),
+            });
+            note.textContent = "Password update ho gaya.";
+            note.className = "pass-note text-xs mt-2 text-teal-600";
+            note.style.display = "block";
+            input.value = "";
+            row.querySelector(".change-pass-area").classList.add("hidden");
+            row.querySelector(".change-pass-area").classList.remove("flex");
+          } catch (err) {
+            note.textContent = err.message;
+            note.className = "pass-note text-xs mt-2 text-red-600";
+            note.style.display = "block";
+          }
+        };
+        row.querySelectorAll(".btn.danger")[0].onclick = async () => {
+          if (isSelf) return;
+          if (!confirm("Admin user '" + u.username + "' ko delete karna hai?")) return;
+          try {
+            await api("/admin/users/" + u.id, { method: "DELETE" });
+            loadAdmins();
+          } catch (err) { alert(err.message); }
+        };
+        body.appendChild(row);
+      });
+    } catch (err) {
+      $("adminsEmpty").style.display = "block";
+      $("adminsEmpty").textContent = "Error loading admins: " + err.message;
+    }
+  }
 </script>
 </body>
 </html>

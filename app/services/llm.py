@@ -1,13 +1,48 @@
 import time
 import logging
-from groq import Groq, RateLimitError, APIConnectionError, APITimeoutError
+from groq import Groq, RateLimitError, APIConnectionError, APITimeoutError, APIStatusError
 from app.config import GROQ_API_KEY
-from app.db import DEFAULT_SYSTEM_PROMPT, FALLBACK_MESSAGE, NO_RELEVANT_CONTEXT_FOUND
+from app.db import DEFAULT_SYSTEM_PROMPT
 
 client = Groq(api_key=GROQ_API_KEY)
 logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 3
+
+# groq/compound-mini exposes a 131,072-token context window (~500KB of text).
+# We deliberately cap the retrieved context far below that: answers are 2-4
+# sentences so a handful of chunks is plenty, and staying well under the window
+# also keeps the HTTP request body below Groq's entity-size cap (oversized
+# bodies surface as HTTP 413 "Request Entity Too Large").
+MAX_CONTEXT_CHARS = 16_000
+
+
+def truncate_chunks(chunks: list[dict], max_chars: int = MAX_CONTEXT_CHARS) -> list[str]:
+    """Keep the most relevant chunks for the LLM context, dropping or trimming
+    anything beyond ``max_chars``.
+
+    ``chunks`` is a list of ``{"text": str, "score": float}`` dicts. Greedy
+    selection sorts highest-scoring chunks first: full chunks are kept while
+    they fit, the first chunk that would overflow is sliced to the remaining
+    budget, and lower-scoring chunks are dropped entirely.
+    """
+    if max_chars <= 0:
+        return []
+    budget = max_chars
+    selected: list[str] = []
+    for chunk in sorted(chunks, key=lambda c: c.get("score") or 0.0, reverse=True):
+        text = (chunk.get("text") or "").strip()
+        if not text:
+            continue
+        if len(text) <= budget:
+            selected.append(text)
+            budget -= len(text)
+        else:
+            selected.append(text[:budget])
+            budget = 0
+        if budget <= 0:
+            break
+    return selected
 
 
 def _is_daily_limit(exc: RateLimitError) -> bool:
@@ -54,36 +89,24 @@ def _create_completion(prompt: str) -> str:
                 delay,
             )
             time.sleep(delay)
+        except APIStatusError as exc:
+            # 413 means the prompt body exceeds Groq's entity-size limit.
+            # Its only fix is a smaller prompt, which truncation already
+            # enforces, so retrying the identical payload is pointless.
+            if exc.status_code == 413:
+                last_error = exc
+                logger.error(
+                    "Groq rejected an oversized request (HTTP 413). Context is "
+                    "already capped at MAX_CONTEXT_CHARS=%d; check for an "
+                    "oversized agent system prompt. Not retrying: %s",
+                    MAX_CONTEXT_CHARS,
+                    exc,
+                )
+            raise exc
     raise last_error
-
-BEHAVIOR_RULES = f"""
-UNIVERSAL RULES (apply on top of any persona above):
-
-STEP 1 - CLASSIFY the user's message into one of two types:
-  - TYPE A (CASUAL / SMALL TALK): greetings ("hi", "hello", "salam", "hey", "yo", "good morning"),
-    how-are-you questions ("kya haal hai", "kaise ho", "what's up"), thanks, farewells, or any
-    non-informational remark.
-  - TYPE B (FACTUAL QUESTION): a genuine request for information about N2X System (services, projects,
-    pricing, portfolio, contact details, technologies, capabilities, etc.).
-
-STEP 2 - RESPOND according to the type:
-  - TYPE A (CASUAL): reply naturally, warmly and conversationally in the user's language, keeping your
-    persona/tone. You do NOT need the Context below for these. NEVER use the fallback message here.
-  - TYPE B (FACTUAL): answer ONLY from the Context below. You MUST NOT use outside knowledge, general
-    knowledge, or anything learned during training for any factual claim. If the Context is exactly
-    "{NO_RELEVANT_CONTEXT_FOUND}", it means no relevant information was found in the knowledge base;
-    in that case reply with EXACTLY this message and nothing else:
-{FALLBACK_MESSAGE}
-Do NOT guess, and do NOT answer a factual question from memory when the Context has no relevant information.
-
-Keep answers short and to the point (2-4 sentences max).
-"""
-
 
 def generate_answer(question: str, context: str, system_prompt: str = DEFAULT_SYSTEM_PROMPT) -> str:
     prompt = f"""{system_prompt}
-
-{BEHAVIOR_RULES}
 
 Context:
 {context}

@@ -1,11 +1,12 @@
 import os
+import json
 import logging
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
-from app.db import init_db
+from app.db import init_db, get_agent_by_slug
 from app.routes import upload, chat, admin
 from app.services.auth import COOKIE_NAME, is_authenticated
 
@@ -34,8 +35,52 @@ app.include_router(admin.router)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
-def _no_cache_file(path: str):
-    return FileResponse(path, headers={
+def _html_escape(text: str) -> str:
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def _no_cache_file(path: str, status_code: int = 200):
+    return FileResponse(path, status_code=status_code, headers={
+        "Cache-Control": "no-store",
+        "Pragma": "no-cache",
+    })
+
+
+def _load_template(path: str) -> str | None:
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+AGENT_CHAT_TEMPLATE = _load_template("static/agent_chat.html")
+
+
+@app.get("/chat/{slug}")
+def agent_chat_page(slug: str):
+    """Standalone full-page chat for one agent, locked to that agent (no
+    dropdown). Missing slugs get a friendly 404 page."""
+    agent = get_agent_by_slug(slug.lower())
+    if not agent or AGENT_CHAT_TEMPLATE is None:
+        return _no_cache_file("static/agent_404.html", status_code=404)
+    payload = {
+        "id": agent["id"],
+        "name": agent["name"],
+        "greeting": agent.get("greeting") or "",
+        "slug": agent["slug"],
+    }
+    html = (
+        AGENT_CHAT_TEMPLATE
+        .replace("__AGENT_NAME__", _html_escape(agent["name"]))
+        .replace("__AGENT_JSON__", json.dumps(payload))
+    )
+    return HTMLResponse(html, headers={
         "Cache-Control": "no-store",
         "Pragma": "no-cache",
     })

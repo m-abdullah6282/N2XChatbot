@@ -3,6 +3,9 @@
 
   var CONFIG = window.N2XChatConfig || {};
   var API_BASE = CONFIG.apiBase || "";
+  var EMBEDDED = CONFIG.mode === "embedded";
+  var LOCKED_AGENT =
+    window.N2X_CHAT_AGENT && typeof window.N2X_CHAT_AGENT.id === "number" ? window.N2X_CHAT_AGENT : null;
 
   var sessionId = localStorage.getItem("n2x_session_id");
   if (!sessionId) {
@@ -16,6 +19,13 @@
   root.innerHTML = "";
 
   function mount() {
+    if (EMBEDDED && CONFIG.mount) {
+      var host = document.getElementById(CONFIG.mount);
+      if (host) {
+        host.appendChild(root);
+        return;
+      }
+    }
     document.body.appendChild(root);
   }
   if (document.readyState === "loading") {
@@ -48,6 +58,11 @@
     "#n2x-input:focus { border-color: #00C2B8; }" +
     "#n2x-send { background: #00C2B8; color: #fff; border: none; border-radius: 8px; padding: 0 18px; font-size: 14px; font-weight: 600; cursor: pointer; }" +
     "#n2x-send:hover { background: #0d9488; }" +
+    "#n2x-widget.embedded { position: static; inset: auto; width: 100%; height: 100%; }" +
+    "#n2x-widget.embedded #n2x-launcher, #n2x-widget.embedded #n2x-close { display: none; }" +
+    "#n2x-widget.embedded #n2x-panel { position: static; right: auto; bottom: auto; width: 100%; height: 100%; max-width: none; max-height: none; border: none; border-radius: 0; box-shadow: none; }" +
+    "#n2x-widget.embedded #n2x-panel.hidden { display: flex; }" +
+    "#n2x-widget .locked-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 14px; font-weight: 600; }" +
     "@media (max-width: 480px) { #n2x-widget { right: 12px; bottom: 12px; } #n2x-panel { right: 84px; bottom: 12px; width: calc(100vw - 96px); height: 340px; max-height: calc(100dvh - 84px); } }";
 
   document.head.appendChild(style);
@@ -176,6 +191,32 @@
   }
 
   async function loadAgents() {
+    var locked = LOCKED_AGENT;
+    if (EMBEDDED && !locked) {
+      // Backstop: if the page did not inject the agent, resolve it from the
+      // URL slug (e.g. /chat/sales-assistant) against the public agent list.
+      var pathMatch = window.location.pathname.match(/^\/chat\/([A-Za-z0-9_-]+)\/?$/);
+      if (pathMatch) {
+        try {
+          var listRes = await fetch(API_BASE + "/agents");
+          var list = (await listRes.json()) || [];
+          var found = list.filter(function (a) { return a.slug === pathMatch[1]; })[0];
+          if (found) {
+            locked = { id: found.id, name: found.name, greeting: found.greeting, slug: found.slug };
+          }
+        } catch (e) {}
+      }
+    }
+
+    if (locked) {
+      var label = document.createElement("span");
+      label.className = "locked-label";
+      label.textContent = locked.name;
+      agentSelect.parentNode.replaceChild(label, agentSelect);
+      selectAgent(locked);
+      return;
+    }
+
     try {
       var res = await fetch(API_BASE + "/agents");
       agents = (await res.json()) || [];
@@ -198,11 +239,13 @@
   }
 
   agentSelect.addEventListener("change", function () {
+    if (!agentSelect.parentNode) return;
     var target = agents.filter(function (a) { return a.id === parseInt(agentSelect.value, 10); })[0];
     if (target) selectAgent(target);
   });
 
   loadAgents();
+  if (EMBEDDED) startPolling();
 
   function openPanel() {
     panel.classList.remove("hidden");

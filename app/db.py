@@ -1,9 +1,14 @@
+import hashlib
+import hmac
 import os
 import re
+import secrets
 import sqlite3
 import uuid
 from collections import Counter
 from datetime import datetime, timedelta
+
+from app.config import ADMIN_PASSWORD, ADMIN_USERNAME
 
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "chatbot.db")
 
@@ -58,11 +63,26 @@ def init_db():
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS admin_users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                salt TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'admin',
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS agents (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL UNIQUE,
+                description TEXT NOT NULL DEFAULT '',
                 system_prompt TEXT NOT NULL,
                 greeting TEXT NOT NULL,
+                owner_admin_id INTEGER REFERENCES admin_users(id),
+                slug TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             )
             """
@@ -83,8 +103,22 @@ def init_db():
         )
 
         _ensure_column(conn, "messages", "was_fallback", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "admin_sessions", "admin_user_id", "INTEGER")
+        _ensure_column(conn, "admin_users", "role", "TEXT NOT NULL DEFAULT 'admin'")
+        _ensure_column(conn, "agents", "owner_admin_id", "INTEGER REFERENCES admin_users(id)")
+        _ensure_column(conn, "agents", "slug", "TEXT")
+        _ensure_column(conn, "agents", "description", "TEXT NOT NULL DEFAULT ''")
+
+        # SQLite cannot add a UNIQUE constraint via ALTER TABLE ADD COLUMN, so
+        # the slug's uniqueness is enforced with a dedicated index. NULL slugs
+        # (pre-migration rows) are permitted until backfill_agent_slugs runs.
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_slug ON agents(slug)")
 
     seed_default_agent()
+    seed_default_admin()
+    backfill_agent_owners()
+    backfill_agent_slugs()
+    backfill_agent_descriptions()
 
 
 NO_RELEVANT_CONTEXT_FOUND = "NO_RELEVANT_CONTEXT_FOUND"
@@ -94,31 +128,69 @@ FALLBACK_MESSAGE = (
     "Main aapko hamare team se connect kar deta hoon."
 )
 
-DEFAULT_SYSTEM_PROMPT = f"""You are N2X System's friendly chat assistant. Follow these rules:
+# The ONE universal system-prompt template every agent shares. It is a single
+# constant that carries all FIXED behavior rules (language handling, greeting
+# hygiene, casual vs factual classification, contact/address handling, fallback,
+# tone, answer length). Admins never edit it.
+#
+# The template has exactly two placeholders the agent fills in:
+#   {agent_name}        -> the agent's name
+#   {agent_description} -> the agent's one-line description/purpose
+#
+# build_system_prompt() fills them; a custom "Advanced System Prompt" (optional,
+# power-user) can override the whole thing per-agent and is stored in the row.
+SYSTEM_PROMPT_TEMPLATE = f"""You are {{agent_name}}. {{agent_description}}
 
-1. Language & greeting: Reply in the SAME language the user writes in. If Roman Urdu/Hindi, reply in Roman Urdu/Hindi; if English, reply in English. GREETING RULES: NEVER use "Namaste", "Namastey", "Namaskar" or any Hindi greeting. Always keep it simple and neutral: use "Hi" or "Hello" (optionally "Assalam-o-Alaikum" in Roman Urdu chats). Avoid any religious or region-specific greetings.
+UNIVERSAL RULES — follow these for every conversation:
+
+1. Language & greeting: Reply in the SAME language the user writes in (Roman Urdu/Hindi -> Roman Urdu/Hindi, English -> English). NEVER use "Namaste", "Namastey" or "Namaskar". Keep greetings simple and neutral: use "Hi" or "Hello" (optionally "Assalam-o-Alaikum" in Roman Urdu chats). Avoid any religious or region-specific greetings.
 
 2. Roman Urdu is written informally with many spellings. Understand intent regardless of spelling/small typos. For example: "kasiay/kese/kaise" all mean "kaise" (how), "pr/per/par" all mean "par" (at/on), "kru/karo/karu" mean "karein" (to do), "aat/baat/bat" all mean "baat" (talk).
 
-3. CRITICAL — "baat" means "contact": "baat karna", "baat kaha", "raabta", "milna", "contact" all mean getting in touch with N2X System. When the user asks how/where to talk to or contact you, ALWAYS directly give the contact details below from the context: website, email, phone, and address. Do not deflect with a generic "ask me about services" reply.
+3. CRITICAL — "baat" means "contact": "baat karna", "baat kaha", "raabta", "milna", "contact", "office", "address" all mean getting in touch via the contact details. When the user asks how/where to talk to or contact you, ALWAYS directly give the contact details from the context (website, email, phone, address). Do not deflect with a generic "ask me about services" reply.
 
-4. Be friendly, warm and conversational. Use emojis naturally to make the chat feel lively. 😊
-
-5. CLASSIFY the message before answering. If it is a greeting, thanks, farewell, or casual small talk (e.g. "hi", "hello", "salam", "hey", "kya haal hai", "thanks", "bye"), reply naturally, warmly and conversationally — no context is needed for these and you MUST NEVER use the fallback message for them.
-
-6. For GENUINE FACTUAL QUESTIONS about N2X System (services, projects, pricing, contact details, etc.): ANSWER ONLY FROM THE CONTEXT BELOW. You MUST NOT use outside knowledge, general knowledge, or anything learned during training for any factual claim. Never guess or make anything up. If the context is exactly "{NO_RELEVANT_CONTEXT_FOUND}", it means no relevant information was found in the knowledge base. In that case, reply with EXACTLY this message and nothing else:
+4. STEP 1 - CLASSIFY the user's message into one of two types:
+  - TYPE A (CASUAL / SMALL TALK): greetings ("hi", "hello", "salam", "hey", "good morning"), how-are-you questions ("kya haal hai", "kaise ho", "what's up"), thanks, farewells, or any non-informational remark.
+  - TYPE B (FACTUAL QUESTION): a genuine request for information about the agent's topic (services, projects, pricing, portfolio, contact details, etc.).
+STEP 2 - RESPOND according to the type:
+  - TYPE A (CASUAL): reply naturally, warmly and conversationally in the user's language, keeping your persona/tone. You do NOT need the Context below and you MUST NEVER use the fallback message for them.
+  - TYPE B (FACTUAL): answer ONLY from the Context below. You MUST NOT use outside knowledge, general knowledge, or anything learned during training for any factual claim. Never guess or make anything up. If the Context is exactly "{NO_RELEVANT_CONTEXT_FOUND}", it means no relevant information was found in the knowledge base; in that case reply with EXACTLY this message and nothing else:
 {FALLBACK_MESSAGE}
-Do NOT attempt to answer the question and do NOT use general knowledge.
+Do NOT attempt to answer the question and do NOT use general knowledge when the Context has no relevant information.
 
-7. Keep answers short and to the point (2-4 sentences max).
+5. Be friendly, warm and conversational. Use emojis naturally to make the chat feel lively. 😊
+
+6. Keep answers short and to the point (2-4 sentences max).
 
 Examples of correct behavior:
 Q: "in se baat kaha pr kru?"
 A: "Hi! 😊 Aap N2X System se baat karne ke liye email info@n2xsystem.com, phone +92 323 452 9766, ya website www.n2xsystem.com use kar sakte hain. Address: Plot C 12, Street 195, DHA Phase 1, Lahore."
 
 Q: "tum se contact kaise karu?"
-A: "Hello! Aap humein email info@n2xsystem.com par likh sakte hain, +92 323 452 9766 par call kar sakte hain, ya website www.n2xsystem.com par visit kar sakte hain. 😊"""
+A: "Hello! Aap humein email info@n2xsystem.com par likh sakte hain, +92 323 452 9766 par call kar sakte hain, ya website www.n2xsystem.com par visit kar sakte hain. 😊"""  # noqa: E501
 
+DEFAULT_AGENT_DESCRIPTION = (
+    "N2X System ka official assistant - services, projects, pricing, "
+    "portfolio aur contact details ke sawalon ke jawab deta hai."
+)
+
+
+def build_system_prompt(name: str, description: str = "") -> str:
+    """Fill the universal template's two placeholders with the agent's short
+    fields. This is the default prompt; only a per-agent custom override
+    (Advanced System Prompt) replaces it."""
+    desc = (description or "").strip()
+    if desc:
+        return (
+            SYSTEM_PROMPT_TEMPLATE.replace("{agent_name}", name)
+            .replace("{agent_description}", desc)
+        )
+    return SYSTEM_PROMPT_TEMPLATE.replace("{agent_name}", name).replace(
+        " {agent_description}", ""
+    )
+
+
+DEFAULT_SYSTEM_PROMPT = build_system_prompt("N2X Assistant", DEFAULT_AGENT_DESCRIPTION)
 DEFAULT_GREETING = "Hello! Main aapki kaise madad kar sakta hoon?"
 
 
@@ -127,9 +199,192 @@ def seed_default_agent():
         row = conn.execute("SELECT COUNT(*) AS c FROM agents").fetchone()
         if row["c"] == 0:
             conn.execute(
-                "INSERT INTO agents (name, system_prompt, greeting) VALUES (?, ?, ?)",
-                ("N2X Assistant", DEFAULT_SYSTEM_PROMPT, DEFAULT_GREETING),
+                "INSERT INTO agents (name, description, system_prompt, greeting, slug) VALUES (?, ?, ?, ?, ?)",
+                ("N2X Assistant", DEFAULT_AGENT_DESCRIPTION, DEFAULT_SYSTEM_PROMPT, DEFAULT_GREETING, "n2x-assistant"),
             )
+
+
+def _default_agent_owner(conn: sqlite3.Connection) -> int | None:
+    """The admin agents are assigned to during migration. Prefer the original
+    .env super admin, then any super admin, then the oldest admin."""
+    row = conn.execute(
+        "SELECT id FROM admin_users WHERE username = ? ORDER BY id LIMIT 1",
+        (ADMIN_USERNAME,),
+    ).fetchone()
+    if row:
+        return row["id"]
+    row = conn.execute(
+        "SELECT id FROM admin_users WHERE role = 'super_admin' ORDER BY id LIMIT 1"
+    ).fetchone()
+    if row:
+        return row["id"]
+    row = conn.execute("SELECT id FROM admin_users ORDER BY id LIMIT 1").fetchone()
+    return row["id"] if row else None
+
+
+def backfill_agent_owners():
+    """Migration safety: assign every agent without an owner to the original
+    .env super admin so no pre-existing agent is left orphaned."""
+    with get_conn() as conn:
+        owner_id = _default_agent_owner(conn)
+        if owner_id is None:
+            return
+        conn.execute(
+            "UPDATE agents SET owner_admin_id = ? WHERE owner_admin_id IS NULL",
+            (owner_id,),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Admin users
+# ---------------------------------------------------------------------------
+
+def _hash_password(password: str, salt: str | None = None) -> tuple[str, str]:
+    """Hash a password with PBKDF2-HMAC-SHA256 and a per-user random salt.
+    Returns (password_hash, salt)."""
+    if salt is None:
+        salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), salt.encode("utf-8"), 100_000
+    )
+    return digest.hex(), salt
+
+
+def seed_default_admin():
+    """Ensure at least one super admin exists.
+
+    On an empty table, seeds the .env ADMIN_USERNAME / ADMIN_PASSWORD as the
+    super admin. On an existing DB the column migration gives every row the
+    default 'admin' role; here we promote the original .env-seeded admin so
+    there is always at least one super admin in the system."""
+    with get_conn() as conn:
+        row = conn.execute("SELECT COUNT(*) AS c FROM admin_users").fetchone()
+        if row["c"] == 0:
+            password_hash, salt = _hash_password(ADMIN_PASSWORD)
+            conn.execute(
+                "INSERT INTO admin_users (username, password_hash, salt, role) VALUES (?, ?, ?, ?)",
+                (ADMIN_USERNAME, password_hash, salt, "super_admin"),
+            )
+            return
+
+        env_admin = conn.execute(
+            "SELECT id FROM admin_users WHERE username = ? ORDER BY id LIMIT 1",
+            (ADMIN_USERNAME,),
+        ).fetchone()
+        if env_admin:
+            conn.execute(
+                "UPDATE admin_users SET role = 'super_admin' WHERE id = ?",
+                (env_admin["id"],),
+            )
+            return
+
+        super_count = conn.execute(
+            "SELECT COUNT(*) AS c FROM admin_users WHERE role = 'super_admin'"
+        ).fetchone()["c"]
+        if super_count == 0:
+            first = conn.execute("SELECT id FROM admin_users ORDER BY id LIMIT 1").fetchone()
+            if first:
+                conn.execute(
+                    "UPDATE admin_users SET role = 'super_admin' WHERE id = ?",
+                    (first["id"],),
+                )
+
+
+def create_admin_user(username: str, password: str, role: str = "admin") -> dict:
+    password_hash, salt = _hash_password(password)
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO admin_users (username, password_hash, salt, role) VALUES (?, ?, ?, ?)",
+            (username, password_hash, salt, role),
+        )
+        admin_id = cur.lastrowid
+    return get_admin_user(admin_id)
+
+
+def get_admin_role(admin_id: int) -> str | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT role FROM admin_users WHERE id = ?",
+            (admin_id,),
+        ).fetchone()
+    return row["role"] if row else None
+
+
+def get_admin_user(admin_id: int) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT id, username, role, created_at FROM admin_users WHERE id = ?",
+            (admin_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_admin_user_by_username(username: str) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT id, username, role, created_at FROM admin_users WHERE username = ?",
+            (username,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def verify_admin_user(username: str, password: str) -> dict | None:
+    """Return the admin user info if credentials match, else None."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT id, username, password_hash, salt FROM admin_users WHERE username = ?",
+            (username,),
+        ).fetchone()
+    if not row:
+        return None
+    password_hash, _ = _hash_password(password, row["salt"])
+    if not hmac.compare_digest(password_hash, row["password_hash"]):
+        return None
+    return {"id": row["id"], "username": row["username"]}
+
+
+def list_admin_users() -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, username, role, created_at FROM admin_users ORDER BY id"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_admin_user(admin_id: int) -> bool:
+    """Delete an admin user. Returns False (and deletes nothing) when it is
+    the last remaining admin, or the last remaining super_admin, so at least
+    one admin and one super_admin always survive."""
+    with get_conn() as conn:
+        target = conn.execute(
+            "SELECT role FROM admin_users WHERE id = ?", (admin_id,)
+        ).fetchone()
+        if not target:
+            return False
+        if conn.execute("SELECT COUNT(*) AS c FROM admin_users").fetchone()["c"] <= 1:
+            return False
+        if target["role"] == "super_admin":
+            super_count = conn.execute(
+                "SELECT COUNT(*) AS c FROM admin_users WHERE role = 'super_admin'"
+            ).fetchone()["c"]
+            if super_count <= 1:
+                return False
+        cur = conn.execute("DELETE FROM admin_users WHERE id = ?", (admin_id,))
+        if cur.rowcount > 0:
+            conn.execute(
+                "DELETE FROM admin_sessions WHERE admin_user_id = ?", (admin_id,)
+            )
+    return cur.rowcount > 0
+
+
+def change_admin_password(admin_id: int, new_password: str) -> bool:
+    password_hash, salt = _hash_password(new_password)
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE admin_users SET password_hash = ?, salt = ? WHERE id = ?",
+            (password_hash, salt, admin_id),
+        )
+    return cur.rowcount > 0
 
 
 def save_message(session_id: str, role: str, content: str, was_fallback: int = 0) -> int:
@@ -186,18 +441,28 @@ def create_or_update_handoff(session_id: str, question: str, agent_id: int | Non
             )
 
 
-def get_pending_handoffs() -> list[dict]:
-    with get_conn() as conn:
-        rows = conn.execute(
-            """
+def get_pending_handoffs(admin_id: int | None = None, role: str | None = None) -> list[dict]:
+    """Pending fallbacks, scoped by admin role:
+    - super_admin (admin_id=None too): every pending fallback.
+    - regular admin: only fallbacks from agents they own, plus unassigned
+      (agent_id NULL) shared fallbacks that belong to no specific agent."""
+    query = """
             SELECT h.id, h.session_id, h.question, h.created_at,
                    a.name AS agent_name
             FROM handoffs h
             LEFT JOIN agents a ON a.id = h.agent_id
             WHERE h.status = 'pending'
-            ORDER BY h.id DESC
-            """
-        ).fetchall()
+        """
+    params: list = []
+    if admin_id is not None and role != "super_admin":
+        query += (
+            " AND (h.agent_id IS NULL OR h.agent_id IN "
+            "(SELECT id FROM agents WHERE owner_admin_id = ?))"
+        )
+        params.append(admin_id)
+    query += " ORDER BY h.id DESC"
+    with get_conn() as conn:
+        rows = conn.execute(query, params).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -380,11 +645,11 @@ def delete_api_key(key_id: int) -> bool:
     return cur.rowcount > 0
 
 
-def create_admin_session(token: str):
+def create_admin_session(token: str, admin_user_id: int | None = None):
     with get_conn() as conn:
         conn.execute(
-            "INSERT INTO admin_sessions (token) VALUES (?)",
-            (token,),
+            "INSERT INTO admin_sessions (token, admin_user_id) VALUES (?, ?)",
+            (token, admin_user_id),
         )
 
 
@@ -397,53 +662,245 @@ def admin_session_exists(token: str) -> bool:
     return row is not None
 
 
+def get_session_admin_id(token: str) -> int | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT admin_user_id FROM admin_sessions WHERE token = ?",
+            (token,),
+        ).fetchone()
+    return row["admin_user_id"] if row else None
+
+
 def delete_admin_session(token: str) -> bool:
     with get_conn() as conn:
         cur = conn.execute("DELETE FROM admin_sessions WHERE token = ?", (token,))
     return cur.rowcount > 0
 
 
-def create_agent(name: str, system_prompt: str, greeting: str) -> dict:
+def get_agent_by_slug(slug: str) -> dict | None:
+    """Fetch an agent by its URL-friendly slug (used by /chat/{slug})."""
     with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT a.*, au.username AS owner_username
+            FROM agents a
+            LEFT JOIN admin_users au ON au.id = a.owner_admin_id
+            WHERE a.slug = ?
+            """,
+            (slug,),
+        ).fetchone()
+    return _mark_custom_prompt(dict(row)) if row else None
+
+
+def _slugify(name: str) -> str:
+    """Turn a name into a URL-friendly slug: lowercase, hyphen-separated,
+    no special characters (e.g. "Sales Assistant!" -> "sales-assistant")."""
+    slug = re.sub(r"[^a-z0-9]+", "-", str(name).lower()).strip("-")
+    return slug or "agent"
+
+
+def _unique_slug(conn: sqlite3.Connection, base: str = "", exclude_agent_id: int | None = None) -> str:
+    """Return a unique slug derived from ``base``, appending -2, -3, ... when
+    a collision exists (or when the same agent already holds it)."""
+    candidate = _slugify(base)
+    n = 2
+    while True:
+        if exclude_agent_id is not None:
+            row = conn.execute(
+                "SELECT 1 FROM agents WHERE slug = ? AND id != ?",
+                (candidate, exclude_agent_id),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT 1 FROM agents WHERE slug = ?",
+                (candidate,),
+            ).fetchone()
+        if not row:
+            return candidate
+        candidate = f"{_slugify(base)}-{n}"
+        n += 1
+
+
+def backfill_agent_slugs():
+    """Migration safety: give every pre-slug agent a slug derived from its
+    name. Idempotent — rows updated once, collisions get -2/-3 suffixes."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, name FROM agents WHERE slug IS NULL OR slug = '' ORDER BY id"
+        ).fetchall()
+        for row in rows:
+            slug = _unique_slug(conn, row["name"], exclude_agent_id=row["id"])
+            conn.execute("UPDATE agents SET slug = ? WHERE id = ?", (slug, row["id"]))
+
+
+def _extract_agent_description(legacy_prompt: str, name: str) -> str:
+    """Derive a short one-line purpose for a legacy agent whose row predates
+    the name/description/greeting schema."""
+    legacy = (legacy_prompt or "").strip()
+    if "N2X System's friendly chat assistant" in legacy:
+        return DEFAULT_AGENT_DESCRIPTION
+    match = re.search(r"You are (?:the |a |an )?([^.\n]{8,250})\.?", legacy)
+    if match:
+        return match.group(1).replace("*", "").strip()
+    return f"{name} - Aapke sawalon ke jawab dene ke liye."
+
+
+def backfill_agent_descriptions():
+    """Migration safety: give every pre-description agent a one-line purpose
+    derived from its legacy system prompt. Idempotent — only rows whose
+    description is still empty/whitespace get updated."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, name, system_prompt FROM agents WHERE description IS NULL OR description = ''"
+        ).fetchall()
+        for row in rows:
+            description = _extract_agent_description(row["system_prompt"], row["name"])
+            conn.execute(
+                "UPDATE agents SET description = ? WHERE id = ?",
+                (description, row["id"]),
+            )
+
+
+def _resolve_system_prompt(name: str, description: str, custom: str = "") -> str:
+    """The stored prompt is the universal template filled with the agent's
+    name/description — unless the admin provided a non-empty custom override
+    (Advanced System Prompt)."""
+    custom_prompt = (custom or "").strip()
+    if custom_prompt:
+        return custom_prompt
+    return build_system_prompt(name, description)
+
+
+def create_agent(
+    name: str,
+    description: str = "",
+    greeting: str = "",
+    owner_admin_id: int | None = None,
+    slug: str | None = None,
+    system_prompt: str = "",
+) -> dict:
+    with get_conn() as conn:
+        final_slug = _unique_slug(conn, slug or name)
         cur = conn.execute(
-            "INSERT INTO agents (name, system_prompt, greeting) VALUES (?, ?, ?)",
-            (name, system_prompt, greeting),
+            "INSERT INTO agents (name, description, system_prompt, greeting, owner_admin_id, slug) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                name,
+                description,
+                _resolve_system_prompt(name, description, system_prompt),
+                greeting,
+                owner_admin_id,
+                final_slug,
+            ),
         )
         agent_id = cur.lastrowid
     return get_agent(agent_id)
 
 
-def get_agent(agent_id: int) -> dict | None:
+def _mark_custom_prompt(agent: dict) -> dict:
+    """Expose whether the stored system prompt is a manual (Advanced) override
+    rather than the auto-built universal-template prompt. The admin UI uses
+    this to pre-expand the Advanced section for legacy/custom agents."""
+    stored = (agent.get("system_prompt") or "").strip()
+    expected = build_system_prompt(
+        agent.get("name") or "", agent.get("description") or ""
+    )
+    agent["has_custom_prompt"] = bool(stored) and stored != expected
+    return agent
+
+
+def get_agent(
+    agent_id: int,
+    admin_id: int | None = None,
+    role: str | None = None,
+) -> dict | None:
+    """Fetch an agent. When admin_id/role are given, a non-super admin only
+    gets their own agents (anything else returns None)."""
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT * FROM agents WHERE id = ?",
+            """
+            SELECT a.*, au.username AS owner_username
+            FROM agents a
+            LEFT JOIN admin_users au ON au.id = a.owner_admin_id
+            WHERE a.id = ?
+            """,
             (agent_id,),
         ).fetchone()
-    return dict(row) if row else None
+    if not row:
+        return None
+    agent = dict(row)
+    if admin_id is not None and role != "super_admin":
+        if agent.get("owner_admin_id") != admin_id:
+            return None
+    return _mark_custom_prompt(agent)
 
 
-def list_agents() -> list[dict]:
+def list_agents(admin_id: int | None = None) -> list[dict]:
+    """List agents, optionally scoped to one admin. The super admin case
+    (admin_id=None) returns every agent, each with its owner username."""
+    query = """
+        SELECT a.id, a.name, a.description, a.system_prompt, a.greeting, a.slug,
+               a.created_at, a.owner_admin_id, au.username AS owner_username
+        FROM agents a
+        LEFT JOIN admin_users au ON au.id = a.owner_admin_id
+    """
+    params: list = []
+    if admin_id is not None:
+        query += " WHERE a.owner_admin_id = ?"
+        params.append(admin_id)
+    query += " ORDER BY a.id"
     with get_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT id, name, system_prompt, greeting, created_at
-            FROM agents
-            ORDER BY id
-            """
-        ).fetchall()
-    return [dict(r) for r in rows]
+        rows = conn.execute(query, params).fetchall()
+    return [_mark_custom_prompt(dict(r)) for r in rows]
 
 
-def update_agent(agent_id: int, name: str, system_prompt: str, greeting: str) -> bool:
+def update_agent(
+    agent_id: int,
+    name: str,
+    description: str = "",
+    greeting: str = "",
+    admin_id: int | None = None,
+    role: str | None = None,
+    slug: str | None = None,
+    system_prompt: str = "",
+) -> bool:
+    """Update an agent. A non-super admin can only update their own agents
+    (returns False otherwise). The slug is always kept unique: when a non-empty
+    slug is supplied its slugified form is used, otherwise it is re-derived
+    from ``name``. The stored system prompt defaults to the universal template
+    filled with name/description; a non-empty ``system_prompt`` overrides it."""
     with get_conn() as conn:
+        final_slug = _unique_slug(conn, slug or name, exclude_agent_id=agent_id)
+        params: list = [
+            name,
+            description,
+            _resolve_system_prompt(name, description, system_prompt),
+            greeting,
+            final_slug,
+            agent_id,
+        ]
+        scope = ""
+        if admin_id is not None and role != "super_admin":
+            scope = " AND owner_admin_id = ?"
+            params.append(admin_id)
         cur = conn.execute(
-            "UPDATE agents SET name = ?, system_prompt = ?, greeting = ? WHERE id = ?",
-            (name, system_prompt, greeting, agent_id),
+            "UPDATE agents SET name = ?, description = ?, system_prompt = ?, greeting = ?, slug = ? WHERE id = ?{scope}".format(scope=scope),
+            params,
         )
     return cur.rowcount > 0
 
 
-def delete_agent(agent_id: int) -> bool:
+def delete_agent(
+    agent_id: int,
+    admin_id: int | None = None,
+    role: str | None = None,
+) -> bool:
+    """Delete an agent. A non-super admin can only delete their own agents
+    (returns False otherwise)."""
+    params: list = [agent_id]
+    scope = ""
+    if admin_id is not None and role != "super_admin":
+        scope = " AND owner_admin_id = ?"
+        params.append(admin_id)
     with get_conn() as conn:
-        cur = conn.execute("DELETE FROM agents WHERE id = ?", (agent_id,))
+        cur = conn.execute(f"DELETE FROM agents WHERE id = ?{scope}", params)
     return cur.rowcount > 0
