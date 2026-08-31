@@ -101,6 +101,87 @@ def init_db():
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS documents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_id INTEGER REFERENCES agents(id),
+                owner_admin_id INTEGER REFERENCES admin_users(id),
+                filename TEXT NOT NULL,
+                original_filename TEXT NOT NULL,
+                file_path TEXT,
+                file_size INTEGER NOT NULL DEFAULT 0,
+                chunks_count INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'pending',
+                error_message TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS plans (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                price REAL NOT NULL DEFAULT 0,
+                currency TEXT NOT NULL DEFAULT 'PKR',
+                billing_interval TEXT NOT NULL DEFAULT 'monthly',
+                max_agents INTEGER,
+                max_documents INTEGER,
+                max_messages_per_period INTEGER,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                admin_id INTEGER NOT NULL REFERENCES admin_users(id),
+                plan_id INTEGER NOT NULL REFERENCES plans(id),
+                status TEXT NOT NULL DEFAULT 'pending',
+                current_period_start TEXT,
+                current_period_end TEXT,
+                cancel_at_period_end INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS payments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                admin_id INTEGER NOT NULL REFERENCES admin_users(id),
+                subscription_id INTEGER REFERENCES subscriptions(id),
+                provider TEXT NOT NULL DEFAULT 'manual',
+                transaction_id TEXT,
+                amount REAL NOT NULL DEFAULT 0,
+                currency TEXT NOT NULL DEFAULT 'PKR',
+                status TEXT NOT NULL DEFAULT 'pending',
+                provider_reference TEXT,
+                provider_response TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS usage_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                admin_id INTEGER NOT NULL REFERENCES admin_users(id),
+                period_start TEXT NOT NULL,
+                period_end TEXT NOT NULL,
+                message_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
 
         _ensure_column(conn, "messages", "was_fallback", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "admin_sessions", "admin_user_id", "INTEGER")
@@ -113,12 +194,22 @@ def init_db():
         # the slug's uniqueness is enforced with a dedicated index. NULL slugs
         # (pre-migration rows) are permitted until backfill_agent_slugs runs.
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_slug ON agents(slug)")
+        # A document filename is unique within its scope (agent_id or shared
+        # NULL scope). SQLite permits multiple NULLs in a UNIQUE index, which
+        # matches the shared-scope behavior (agent_id IS NULL).
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_scope_filename "
+            "ON documents(agent_id, filename)"
+        )
 
     seed_default_agent()
     seed_default_admin()
     backfill_agent_owners()
     backfill_agent_slugs()
     backfill_agent_descriptions()
+    seed_plans()
+    backfill_subscriptions()
+    backfill_documents()
 
 
 NO_RELEVANT_CONTEXT_FOUND = "NO_RELEVANT_CONTEXT_FOUND"
@@ -298,6 +389,13 @@ def create_admin_user(username: str, password: str, role: str = "admin") -> dict
             (username, password_hash, salt, role),
         )
         admin_id = cur.lastrowid
+    # Grant an active Free subscription so a newly-created normal admin is not
+    # locked out of plan-limit enforcement (mirrors the migration backfill).
+    seed_plans()
+    if get_current_subscription(admin_id) is None:
+        free = get_plan_by_name("Free")
+        if free is not None:
+            create_subscription(admin_id, free["id"], "active")
     return get_admin_user(admin_id)
 
 
@@ -904,3 +1002,517 @@ def delete_agent(
     with get_conn() as conn:
         cur = conn.execute(f"DELETE FROM agents WHERE id = ?{scope}", params)
     return cur.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# Documents (relational record of uploaded knowledge files)
+# ---------------------------------------------------------------------------
+
+DOCUMENT_STATUSES = ("pending", "processing", "ready", "failed")
+
+
+def create_document(
+    agent_id: int | None,
+    owner_admin_id: int | None,
+    filename: str,
+    original_filename: str,
+    file_path: str | None = None,
+    file_size: int = 0,
+) -> int:
+    """Insert a document record and return its id. agent_id=None represents a
+    shared (platform-level) document, mirroring the existing Qdrant scope
+    convention where a missing agent_id payload means 'shared'."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO documents
+                (agent_id, owner_admin_id, filename, original_filename,
+                 file_path, file_size, status)
+            VALUES (?, ?, ?, ?, ?, ?, 'processing')
+            """,
+            (agent_id, owner_admin_id, filename, original_filename, file_path, file_size),
+        )
+        return cur.lastrowid
+
+
+def update_document_status(
+    document_id: int,
+    status: str,
+    chunks_count: int | None = None,
+    error_message: str | None = None,
+) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            UPDATE documents
+            SET status = ?,
+                chunks_count = COALESCE(?, chunks_count),
+                error_message = ?,
+                updated_at = datetime('now')
+            WHERE id = ?
+            """,
+            (status, chunks_count, error_message, document_id),
+        )
+    return cur.rowcount > 0
+
+
+def set_document_file_size(document_id: int, file_size: int) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE documents SET file_size = ?, updated_at = datetime('now') WHERE id = ?",
+            (file_size, document_id),
+        )
+    return cur.rowcount > 0
+
+
+def get_document(document_id: int, admin_id: int | None = None, role: str | None = None) -> dict | None:
+    """Fetch a document. A non-super admin can only fetch documents they own
+    (or, for shared agent_id=NULL documents, only the ones they uploaded)."""
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM documents WHERE id = ?", (document_id,)).fetchone()
+    if not row:
+        return None
+    doc = dict(row)
+    if admin_id is not None and role != "super_admin" and doc.get("owner_admin_id") != admin_id:
+        return None
+    return doc
+
+
+def list_documents(
+    scope: str = "shared",
+    agent_id: int | None = None,
+    admin_id: int | None = None,
+    role: str | None = None,
+) -> list[dict]:
+    """List documents within one scope.
+
+    - scope='shared' (agent_id=None): platform-level documents that every admin
+      may see (existing shared-knowledge behaviour is preserved). A normal admin
+      additionally sees only the shared documents they uploaded.
+    - scope='agent' (agent_id given): documents for one agent. A normal admin
+      only sees documents on agents they own.
+    """
+    if scope == "agent" and agent_id is None:
+        return []
+    if scope == "agent":
+        where = "WHERE agent_id = ?"
+        params: list = [agent_id]
+        if admin_id is not None and role != "super_admin":
+            where += " AND agent_id IN (SELECT id FROM agents WHERE owner_admin_id = ?)"
+            params.append(admin_id)
+        query = "SELECT * FROM documents {where} ORDER BY id".format(where=where)
+    else:
+        where = "WHERE agent_id IS NULL"
+        params = []
+        if admin_id is not None and role != "super_admin":
+            where += " AND owner_admin_id = ?"
+            params.append(admin_id)
+        query = "SELECT * FROM documents {where} ORDER BY id".format(where=where)
+    with get_conn() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_documents_for_admin(
+    admin_id: int,
+    statuses: tuple[str, ...] = ("processing", "ready"),
+) -> int:
+    """Count documents owned by an admin (by owner_admin_id) in the given
+    statuses. Used for plan document-limit enforcement. Shared documents
+    uploaded by this admin are included so uploads are not a loophole."""
+    if not statuses:
+        return 0
+    placeholders = ",".join("?" for _ in statuses)
+    with get_conn() as conn:
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*) AS c FROM documents
+            WHERE owner_admin_id = ? AND status IN ({placeholders})
+            """,
+            (admin_id, *statuses),
+        ).fetchone()
+    return row["c"] if row else 0
+
+
+def delete_document_record_by_scope(agent_id: int | None, filename: str) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM documents WHERE agent_id IS ? AND filename = ?",
+            (agent_id, filename),
+        )
+    return cur.rowcount > 0
+
+
+def backfill_documents():
+    """Migration safety: create a documents row for every file already on disk
+    that has no record yet. Nothing is deleted. Ownership:
+    - agent-scoped files inherit the agent's owner_admin_id.
+    - shared (agent_id=NULL) files cannot have their original uploader
+      recovered, so owner_admin_id is left NULL (unknown) rather than guessed.
+    chunks_count is 0 because the historical count is not stored anywhere."""
+    import os as _os
+
+    def _exists(conn, agent_id, filename):
+        row = conn.execute(
+            "SELECT 1 FROM documents WHERE agent_id IS ? AND filename = ? LIMIT 1",
+            (agent_id, filename),
+        ).fetchone()
+        return row is not None
+
+    base = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "uploaded_files")
+    with get_conn() as conn:
+        for name in _os.listdir(base):
+            full = _os.path.join(base, name)
+            if _os.path.isfile(full):
+                if not _exists(conn, None, name):
+                    conn.execute(
+                        """
+                        INSERT INTO documents
+                            (agent_id, owner_admin_id, filename, original_filename,
+                             file_path, file_size, status, chunks_count)
+                        VALUES (NULL, NULL, ?, ?, ?, ?, 'ready', 0)
+                        """,
+                        (name, name, name, _os.path.getsize(full)),
+                    )
+        agent_dir_prefix = "agent_"
+        for entry in _os.listdir(base):
+            full = _os.path.join(base, entry)
+            if _os.path.isdir(full) and entry.startswith(agent_dir_prefix):
+                try:
+                    agent_id = int(entry.split("_", 1)[1])
+                except ValueError:
+                    continue
+                owner = conn.execute(
+                    "SELECT owner_admin_id FROM agents WHERE id = ?", (agent_id,)
+                ).fetchone()
+                owner_id = owner["owner_admin_id"] if owner else None
+                for fname in _os.listdir(full):
+                    fpath = _os.path.join(full, fname)
+                    if _os.path.isfile(fpath) and not _exists(conn, agent_id, fname):
+                        conn.execute(
+                            """
+                            INSERT INTO documents
+                                (agent_id, owner_admin_id, filename, original_filename,
+                                 file_path, file_size, status, chunks_count)
+                            VALUES (?, ?, ?, ?, ?, ?, 'ready', 0)
+                            """,
+                            (agent_id, owner_id, fname, fname,
+                             _os.path.join(entry, fname), _os.path.getsize(fpath)),
+                        )
+
+
+# ---------------------------------------------------------------------------
+# Plans
+# ---------------------------------------------------------------------------
+
+def _seed_plan(conn: sqlite3.Connection, spec: dict) -> None:
+    row = conn.execute(
+        "SELECT 1 FROM plans WHERE name = ?", (spec["name"],)
+    ).fetchone()
+    if row:
+        return
+    conn.execute(
+        """
+        INSERT INTO plans
+            (name, price, currency, billing_interval, max_agents,
+             max_documents, max_messages_per_period, is_active)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            spec["name"],
+            spec["price"],
+            spec["currency"],
+            spec["billing_interval"],
+            spec["max_agents"],
+            spec["max_documents"],
+            spec["max_messages_per_period"],
+            spec["is_active"],
+        ),
+    )
+
+
+def seed_plans():
+    """Seed SAMPLE/DEVELOPMENT plans (Free/Basic/Pro). Prices are not
+    production figures — final pricing is decided outside the code. `None`
+    for a limit means 'unlimited'."""
+    sample_plans = [
+        {
+            "name": "Free",
+            "price": 0.0,
+            "currency": "PKR",
+            "billing_interval": "monthly",
+            "max_agents": 1,
+            "max_documents": 10,
+            "max_messages_per_period": 1000,
+            "is_active": 1,
+        },
+        {
+            "name": "Basic",
+            "price": 1500.0,
+            "currency": "PKR",
+            "billing_interval": "monthly",
+            "max_agents": 5,
+            "max_documents": 50,
+            "max_messages_per_period": 10000,
+            "is_active": 1,
+        },
+        {
+            "name": "Pro",
+            "price": 5000.0,
+            "currency": "PKR",
+            "billing_interval": "monthly",
+            "max_agents": None,
+            "max_documents": None,
+            "max_messages_per_period": None,
+            "is_active": 1,
+        },
+    ]
+    with get_conn() as conn:
+        for spec in sample_plans:
+            _seed_plan(conn, spec)
+
+
+def get_plan(plan_id: int) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM plans WHERE id = ?", (plan_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_plan_by_name(name: str) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM plans WHERE name = ?", (name,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_plans(only_active: bool = True) -> list[dict]:
+    query = "SELECT * FROM plans"
+    params: list = []
+    if only_active:
+        query += " WHERE is_active = 1"
+    query += " ORDER BY id"
+    with get_conn() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Subscriptions (history preserved; at most one 'active' per admin)
+# ---------------------------------------------------------------------------
+
+def create_subscription(
+    admin_id: int,
+    plan_id: int,
+    status: str = "pending",
+    current_period_start: str | None = None,
+    current_period_end: str | None = None,
+) -> int:
+    if current_period_start is None:
+        current_period_start = "datetime('now')"
+    if current_period_end is None:
+        current_period_end = "datetime('now', '+30 days')"
+    sql_start = (
+        current_period_start
+        if current_period_start.startswith("datetime(")
+        else "?"
+    )
+    sql_end = current_period_end if current_period_end.startswith("datetime(") else "?"
+    params: list = [admin_id, plan_id, status]
+    if sql_start == "?":
+        params.append(current_period_start)
+    if sql_end == "?":
+        params.append(current_period_end)
+    with get_conn() as conn:
+        cur = conn.execute(
+            f"""
+            INSERT INTO subscriptions
+                (admin_id, plan_id, status, current_period_start, current_period_end)
+            VALUES (?, ?, ?, {sql_start}, {sql_end})
+            """,
+            params,
+        )
+        return cur.lastrowid
+
+
+def get_current_subscription(admin_id: int) -> dict | None:
+    """Return the latest subscription row for an admin (the most recently
+    created active one if several exist, otherwise the latest overall)."""
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT * FROM subscriptions
+            WHERE admin_id = ?
+            ORDER BY
+                CASE WHEN status = 'active' THEN 0 ELSE 1 END,
+                id DESC
+            LIMIT 1
+            """,
+            (admin_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_subscriptions(admin_id: int | None = None) -> list[dict]:
+    query = "SELECT * FROM subscriptions"
+    params: list = []
+    if admin_id is not None:
+        query += " WHERE admin_id = ?"
+        params.append(admin_id)
+    query += " ORDER BY id DESC"
+    with get_conn() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def set_subscription_status(subscription_id: int, status: str) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE subscriptions SET status = ?, updated_at = datetime('now') WHERE id = ?",
+            (status, subscription_id),
+        )
+    return cur.rowcount > 0
+
+
+def backfill_subscriptions():
+    """Migration safety: give every existing admin user an active Free-plan
+    subscription if they have none, so pre-existing admins keep working and
+    plan-limit enforcement does not lock them out. This is a legacy/migration
+    grant, not a payment-backed activation; it is clearly labelled as such."""
+    free = get_plan_by_name("Free")
+    if free is None:
+        return
+    with get_conn() as conn:
+        rows = conn.execute("SELECT id FROM admin_users").fetchall()
+        for r in rows:
+            has = conn.execute(
+                "SELECT 1 FROM subscriptions WHERE admin_id = ? LIMIT 1", (r["id"],)
+            ).fetchone()
+            if not has:
+                conn.execute(
+                    """
+                    INSERT INTO subscriptions
+                        (admin_id, plan_id, status, current_period_start, current_period_end)
+                    VALUES (?, ?, 'active', datetime('now'), datetime('now', '+30 days'))
+                    """,
+                    (r["id"], free["id"]),
+                )
+
+
+# ---------------------------------------------------------------------------
+# Payments (provider-independent; no API credentials stored)
+# ---------------------------------------------------------------------------
+
+PAYMENT_STATUSES = ("pending", "success", "failed", "cancelled")
+PAYMENT_PROVIDERS = ("easypaisa", "jazzcash", "manual")
+
+
+def create_payment(
+    admin_id: int,
+    subscription_id: int,
+    provider: str,
+    amount: float,
+    currency: str = "PKR",
+    transaction_id: str | None = None,
+    provider_reference: str | None = None,
+    provider_response: str | None = None,
+) -> dict:
+    """Create a payment record. Always starts as 'pending'. A payment record
+    never activates a subscription by itself — backend-side provider
+    verification must do that via mark_payment_success + activate_subscription."""
+    record = {
+        "admin_id": admin_id,
+        "subscription_id": subscription_id,
+        "provider": provider,
+        "transaction_id": transaction_id,
+        "amount": amount,
+        "currency": currency,
+        "provider_reference": provider_reference,
+    }
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO payments
+                (admin_id, subscription_id, provider, transaction_id,
+                 amount, currency, status, provider_reference, provider_response)
+            VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+            """,
+            (record["admin_id"], record["subscription_id"], record["provider"],
+             record["transaction_id"], record["amount"], record["currency"],
+             record["provider_reference"], provider_response),
+        )
+        record["id"] = cur.lastrowid
+    return record
+
+
+def get_payment(payment_id: int, admin_id: int | None = None, role: str | None = None) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM payments WHERE id = ?", (payment_id,)).fetchone()
+    if not row:
+        return None
+    payment = dict(row)
+    if admin_id is not None and role != "super_admin" and payment.get("admin_id") != admin_id:
+        return None
+    return payment
+
+
+def list_payments(admin_id: int | None = None) -> list[dict]:
+    query = "SELECT * FROM payments"
+    params: list = []
+    if admin_id is not None:
+        query += " WHERE admin_id = ?"
+        params.append(admin_id)
+    query += " ORDER BY id DESC"
+    with get_conn() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def set_payment_status(payment_id: int, status: str) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE payments SET status = ?, updated_at = datetime('now') WHERE id = ?",
+            (status, payment_id),
+        )
+    return cur.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# Usage tracking (foundation; not yet wired into the chat hot-path)
+# ---------------------------------------------------------------------------
+
+def get_usage_record(admin_id: int, period_start: str, period_end: str) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT * FROM usage_records
+            WHERE admin_id = ? AND period_start = ? AND period_end = ?
+            LIMIT 1
+            """,
+            (admin_id, period_start, period_end),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def increment_usage(admin_id: int, period_start: str, period_end: str, amount: int = 1) -> None:
+    """Increment (or create) the message usage for one admin within one period.
+    Called at most once per message request by the usage service — it must not
+    be invoked multiple times for the same request."""
+    row = get_usage_record(admin_id, period_start, period_end)
+    with get_conn() as conn:
+        if row:
+            conn.execute(
+                "UPDATE usage_records SET message_count = message_count + ?, updated_at = datetime('now') WHERE id = ?",
+                (amount, row["id"]),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO usage_records (admin_id, period_start, period_end, message_count)
+                VALUES (?, ?, ?, ?)
+                """,
+                (admin_id, period_start, period_end, amount),
+            )
+
+
+def get_usage_for_period(admin_id: int, period_start: str, period_end: str) -> int:
+    row = get_usage_record(admin_id, period_start, period_end)
+    return row["message_count"] if row else 0

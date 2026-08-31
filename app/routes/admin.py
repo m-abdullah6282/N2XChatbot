@@ -32,6 +32,15 @@ from app.db import (
     delete_admin_user,
     change_admin_password,
     get_session_admin_id,
+    list_subscriptions,
+    list_payments,
+    create_payment,
+    list_plans,
+    get_plan,
+    create_subscription,
+    set_subscription_status,
+    set_payment_status,
+    get_payment,
 )
 from app.models.schemas import (
     ApiKeyCreate,
@@ -52,6 +61,12 @@ from app.services.auth import (
     require_super_admin,
 )
 from app.services.vector_store import delete_points_by_filename, delete_points_by_agent
+from app.services.subscription_service import (
+    enforce_agent_limit,
+    enforce_document_limit,
+    get_current_subscription,
+    SubscriptionError,
+)
 from app.routes.upload import agent_upload_dir
 
 router = APIRouter()
@@ -230,7 +245,14 @@ def _get_owned_agent(agent_id: int, admin_id: int | None, role: str | None) -> d
 def create_new_agent(req: AgentCreate, request: Request):
     if not req.name.strip():
         raise HTTPException(status_code=400, detail="Agent name is required")
-    admin_id, _ = get_current_admin(request)
+    admin_id, role = get_current_admin(request)
+    # Enforce the owner's plan agent-limit. Super admins are not limited by a
+    # normal-admin subscription, so the service skips the check for them.
+    if role != "super_admin":
+        try:
+            enforce_agent_limit(admin_id, role)
+        except SubscriptionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
     try:
         return create_agent(
             req.name.strip(),
@@ -352,3 +374,112 @@ def change_admin_password_endpoint(admin_id: int, req: AdminPasswordChange):
         )
     change_admin_password(admin_id, req.password)
     return {"message": "Password changed"}
+
+
+# ---------------------------------------------------------------------------
+# Subscription & payment views (subscription foundation)
+# ---------------------------------------------------------------------------
+
+def _scope_admin_id(current_admin_id: int, role: str) -> int | None:
+    """Return None for super_admin (see all) or the current admin id for a
+    normal admin (see only their own subscription/payments)."""
+    if role == "super_admin":
+        return None
+    return current_admin_id
+
+
+@router.get("/subscription", dependencies=[Depends(require_admin)])
+def my_subscription(request: Request):
+    """A normal admin's own current subscription; super admin returns all
+    subscriptions. A normal admin can never see another admin's records."""
+    admin_id, role = get_current_admin(request)
+    if role == "super_admin":
+        return {"subscriptions": list_subscriptions()}
+    sub = get_current_subscription(admin_id)
+    plan = get_plan(sub["plan_id"]) if sub else None
+    return {
+        "subscription": sub,
+        "plan": plan,
+    }
+
+
+@router.get("/subscriptions/{admin_id}", dependencies=[Depends(require_admin)])
+def subscription_for_admin(admin_id: int, request: Request):
+    """View one admin's subscription history. Super admin may view any admin;
+    a normal admin may only view their own."""
+    current_admin_id, role = get_current_admin(request)
+    if role == "super_admin":
+        target = admin_id
+    else:
+        if admin_id != current_admin_id:
+            raise HTTPException(status_code=403, detail="You don't have access to this subscription")
+        target = current_admin_id
+    subs = list_subscriptions(target)
+    plan = None
+    current = get_current_subscription(target)
+    if current:
+        plan = get_plan(current["plan_id"])
+    return {"subscriptions": subs, "plan": plan}
+
+
+@router.get("/payments", dependencies=[Depends(require_admin)])
+def payments_view(request: Request):
+    """Super admin sees all payments; a normal admin sees only their own."""
+    admin_id, role = get_current_admin(request)
+    return list_payments(_scope_admin_id(admin_id, role))
+
+
+@router.get("/payments/{payment_id}", dependencies=[Depends(require_admin)])
+def payment_view(payment_id: int, request: Request):
+    admin_id, role = get_current_admin(request)
+    obj = get_payment(payment_id, admin_id=admin_id, role=role)
+    if not obj:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    return obj
+
+
+@router.get("/plans", dependencies=[Depends(require_admin)])
+def plans_view():
+    return {"plans": list_plans(only_active=True)}
+
+
+@router.post("/payments/initiate", dependencies=[Depends(require_admin)])
+def initiate_payment(request: Request, payload: dict | None = None):
+    """Foundation-only endpoint: create a pending subscription + payment for
+    the caller's chosen plan + provider. It NEVER activates the subscription.
+
+    This is a deliberately minimal scaffold. Real provider integration will:
+      1. resolve the pending payment into the provider,
+      2. receive a provider callback/webhook,
+      3. verify server-side,
+      4. then and only then mark payment success and activate the subscription.
+    Until that is implemented, callers should use 'manual'/stub providers and
+    the subscription stays 'pending'."""
+    if payload is None:
+        payload = {}
+    admin_id, _role = get_current_admin(request)
+    plan_id = payload.get("plan_id")
+    provider = (payload.get("provider") or "manual").lower()
+    if not plan_id:
+        raise HTTPException(status_code=400, detail="plan_id is required")
+    plan = get_plan(plan_id)
+    if not plan or not plan.get("is_active"):
+        raise HTTPException(status_code=404, detail="Plan not found or inactive")
+    if provider not in ("easypaisa", "jazzcash", "manual"):
+        raise HTTPException(status_code=400, detail="Unsupported payment provider")
+
+    # Create a pending subscription and a pending payment. No activation.
+    subscription_id = create_subscription(admin_id, plan_id, status="pending")
+    payment = create_payment(
+        admin_id=admin_id,
+        subscription_id=subscription_id,
+        provider=provider,
+        amount=float(plan["price"] or 0),
+        currency=plan["currency"],
+        transaction_id=f"txn_{subscription_id}_{plan_id}",
+    )
+    return {
+        "message": "Payment initiated (pending). Subscription will activate only after backend verification.",
+        "subscription_id": subscription_id,
+        "payment": payment,
+    }

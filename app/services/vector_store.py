@@ -97,16 +97,33 @@ def ensure_contact_index():
     except Exception:
         pass
 
-def store_chunks(chunks: list[str], embeddings: list[list[float]], filename: str, agent_id: int | None = None):
+def store_chunks(
+    chunks: list[str],
+    embeddings: list[list[float]],
+    filename: str,
+    agent_id: int | None = None,
+    document_id: int | None = None,
+    owner_admin_id: int | None = None,
+):
+    """Store vector chunks in Qdrant. The payload carries every chunk's trace
+    metadata: text, filename, contact flag, agent_id (shared when None),
+    document_id, owner_admin_id and a zero-based chunk_index. document_id /
+    owner_admin_id are informational only — authorization is always enforced
+    server-side, never by trusting Qdrant metadata."""
     points = []
-    for chunk, embedding in zip(chunks, embeddings):
+    for index, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
         payload = {
             "text": chunk,
             "filename": filename,
             CONTACT_INDEX_KEYWORD: 1 if is_contact_chunk(chunk) else 0,
+            "chunk_index": index,
         }
         if agent_id is not None:
             payload["agent_id"] = agent_id
+        if document_id is not None:
+            payload["document_id"] = document_id
+        if owner_admin_id is not None:
+            payload["owner_admin_id"] = owner_admin_id
         point = PointStruct(
             id=str(uuid.uuid4()),
             vector=embedding,
