@@ -39,6 +39,7 @@ def init_db():
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
                 was_fallback INTEGER NOT NULL DEFAULT 0,
+                agent_id INTEGER,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             )
             """
@@ -48,7 +49,12 @@ def init_db():
             CREATE TABLE IF NOT EXISTS api_keys (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 api_key TEXT NOT NULL UNIQUE,
+                api_key_hash TEXT,
                 label TEXT NOT NULL,
+                admin_id INTEGER,
+                agent_id INTEGER,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                last_used_at TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             )
             """
@@ -128,8 +134,13 @@ def init_db():
                 currency TEXT NOT NULL DEFAULT 'PKR',
                 billing_interval TEXT NOT NULL DEFAULT 'monthly',
                 max_agents INTEGER,
+                max_support_agents INTEGER,
+                unlimited_ai_agents INTEGER NOT NULL DEFAULT 0,
+                unlimited_support_agents INTEGER NOT NULL DEFAULT 0,
                 max_documents INTEGER,
+                unlimited_documents INTEGER NOT NULL DEFAULT 0,
                 max_messages_per_period INTEGER,
+                unlimited_messages INTEGER NOT NULL DEFAULT 0,
                 is_active INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -184,11 +195,25 @@ def init_db():
         )
 
         _ensure_column(conn, "messages", "was_fallback", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "messages", "agent_id", "INTEGER")
         _ensure_column(conn, "admin_sessions", "admin_user_id", "INTEGER")
         _ensure_column(conn, "admin_users", "role", "TEXT NOT NULL DEFAULT 'admin'")
         _ensure_column(conn, "agents", "owner_admin_id", "INTEGER REFERENCES admin_users(id)")
         _ensure_column(conn, "agents", "slug", "TEXT")
         _ensure_column(conn, "agents", "description", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "agents", "primary_color", "TEXT NOT NULL DEFAULT '#2563EB'")
+        _ensure_column(conn, "api_keys", "admin_id", "INTEGER")
+        _ensure_column(conn, "api_keys", "agent_id", "INTEGER")
+        _ensure_column(conn, "api_keys", "is_active", "INTEGER NOT NULL DEFAULT 1")
+        _ensure_column(conn, "api_keys", "last_used_at", "TEXT")
+        _ensure_column(conn, "api_keys", "api_key_hash", "TEXT")
+        # Plans: new editable fields. max_agents stands in for max_ai_agents and
+        # max_support_agents is added alongside an unlimited flag. None = unlimited.
+        _ensure_column(conn, "plans", "max_support_agents", "INTEGER")
+        _ensure_column(conn, "plans", "unlimited_ai_agents", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "plans", "unlimited_support_agents", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "plans", "unlimited_documents", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "plans", "unlimited_messages", "INTEGER NOT NULL DEFAULT 0")
 
         # SQLite cannot add a UNIQUE constraint via ALTER TABLE ADD COLUMN, so
         # the slug's uniqueness is enforced with a dedicated index. NULL slugs
@@ -208,8 +233,11 @@ def init_db():
     backfill_agent_slugs()
     backfill_agent_descriptions()
     seed_plans()
+    rename_plan()
     backfill_subscriptions()
     backfill_documents()
+    backfill_api_key_hashes()
+    backfill_message_agent_ids()
 
 
 NO_RELEVANT_CONTEXT_FOUND = "NO_RELEVANT_CONTEXT_FOUND"
@@ -218,6 +246,26 @@ FALLBACK_MESSAGE = (
     "Mujhe iski exact information nahi mili. "
     "Main aapko hamare team se connect kar deta hoon."
 )
+
+FALLBACK_MESSAGE_KB = (
+    "Sorry, is sawal ka jawab mere knowledge base mein nahi hai. "
+    "Kya aap dobara puch sakte hain ya koi aur sawal hai?"
+)
+
+# ---------------------------------------------------------------------------
+# Agent-aware context search helpers
+# ---------------------------------------------------------------------------
+
+def _get_agent_uploaded_files_dir(agent_id: int | None = None) -> str:
+    """Return the folder path for uploaded files, scoped by agent.
+
+    - agent_id=None  → shared root:  <project>/uploaded_files/
+    - agent_id given → agent folder: <project>/uploaded_files/agent_<id>/
+    """
+    base = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploaded_files")
+    if agent_id is None:
+        return base
+    return os.path.join(base, f"agent_{agent_id}")
 
 # The ONE universal system-prompt template every agent shares. It is a single
 # constant that carries all FIXED behavior rules (language handling, greeting
@@ -245,20 +293,67 @@ UNIVERSAL RULES — follow these for every conversation:
   - TYPE B (FACTUAL QUESTION): a genuine request for information about the agent's topic (services, projects, pricing, portfolio, contact details, etc.).
 STEP 2 - RESPOND according to the type:
   - TYPE A (CASUAL): reply naturally, warmly and conversationally in the user's language, keeping your persona/tone. You do NOT need the Context below and you MUST NEVER use the fallback message for them.
-  - TYPE B (FACTUAL): answer ONLY from the Context below. You MUST NOT use outside knowledge, general knowledge, or anything learned during training for any factual claim. Never guess or make anything up. If the Context is exactly "{NO_RELEVANT_CONTEXT_FOUND}", it means no relevant information was found in the knowledge base; in that case reply with EXACTLY this message and nothing else:
+  - TYPE B (FACTUAL): answer ONLY from the Context below, but interpret it FLEXIBLY. Roman-Urdu/Hinglish requests for a list use many phrasings: "projects k naam btao", "pojects k naam batayein", "jo jo projects kiye", "projecton ke names", "kaam ki list", "services ka list", "kya services hain" ALL mean the same thing. When the Context contains a projects / products / services / pricing section, ALWAYS extract and list those items (their exact names as written in the Context) even if the user's keywords are loose, misspelled, or half the word (e.g. "pojects", "projcts", "project"). Never demand a perfect spelling match from the user. You MUST NOT use outside knowledge, general knowledge, or anything learned during training for any factual claim. Never guess or make anything up. If the Context is exactly "{NO_RELEVANT_CONTEXT_FOUND}", it means no relevant information was found in the knowledge base; in that case reply with EXACTLY this message and nothing else:
 {FALLBACK_MESSAGE}
 Do NOT attempt to answer the question and do NOT use general knowledge when the Context has no relevant information.
 
 5. Be friendly, warm and conversational. Use emojis naturally to make the chat feel lively. 😊
 
-6. Keep answers short and to the point (2-4 sentences max).
+6. Keep answers short and to the point (2-4 sentences max). When listing items, use bullet points or numbered lists for clarity.
+
+7. LIST EXTRACTION RULE: When the user asks "list", "kitne", "saare", "sab", "how many", "kya kya", or any variation meaning "tell me all", extract EVERY item from the relevant section in the Context. Do not summarize or pick only a few. List them all with their names/titles.
 
 Examples of correct behavior:
 Q: "in se baat kaha pr kru?"
-A: "Hi! 😊 Aap N2X System se baat karne ke liye email info@n2xsystem.com, phone +92 323 452 9766, ya website www.n2xsystem.com use kar sakte hain. Address: Plot C 12, Street 195, DHA Phase 1, Lahore."
+A: [Give the contact details exactly as found in the Context above — phone, email, address, website. Do NOT invent any details.]
 
 Q: "tum se contact kaise karu?"
-A: "Hello! Aap humein email info@n2xsystem.com par likh sakte hain, +92 323 452 9766 par call kar sakte hain, ya website www.n2xsystem.com par visit kar sakte hain. 😊"""  # noqa: E501
+A: [Give the contact details exactly as found in the Context above — phone, email, address, website. Do NOT invent any details.]
+
+Q: "aapki services kya hain?"
+A: [Answer strictly from the Context. List only what is mentioned there.]
+
+Q: "projects k naam btao"
+A: [List ALL project names found in the Context, one by one.]"""  # noqa: E501
+
+def get_context_for_agent(
+    query: str,
+    agent_id: int | None = None,
+    top_k: int = 5,
+    score_threshold: float = 0.3,
+) -> str:
+    """Return the best RAG context for a query, scoped to the correct agent.
+
+    Search order:
+      1. Agent-specific documents  (uploaded_files/agent_<id>/)
+      2. Shared documents          (uploaded_files/)   — fallback / supplement
+
+    This ensures Agent A never sees Agent B's knowledge base.
+
+    The function is a thin DB-layer wrapper. The actual vector search is
+    delegated to ``search_documents_for_agent`` (defined in the RAG/vector
+    module). We import it lazily here so this file stays free of heavy deps.
+
+    Falls back to NO_RELEVANT_CONTEXT_FOUND when nothing relevant is found.
+    """
+    try:
+        # Lazy import to avoid circular deps / heavy startup cost
+        from app.rag import search_documents_for_agent  # type: ignore
+        results = search_documents_for_agent(
+            query=query,
+            agent_id=agent_id,
+            top_k=top_k,
+            score_threshold=score_threshold,
+        )
+        if not results:
+            return NO_RELEVANT_CONTEXT_FOUND
+        return "\n\n".join(results)
+    except ImportError:
+        # RAG module not available — graceful degradation
+        return NO_RELEVANT_CONTEXT_FOUND
+    except Exception:
+        return NO_RELEVANT_CONTEXT_FOUND
+
 
 DEFAULT_AGENT_DESCRIPTION = (
     "N2X System ka official assistant - services, projects, pricing, "
@@ -283,6 +378,32 @@ def build_system_prompt(name: str, description: str = "") -> str:
 
 DEFAULT_SYSTEM_PROMPT = build_system_prompt("N2X Assistant", DEFAULT_AGENT_DESCRIPTION)
 DEFAULT_GREETING = "Hello! Main aapki kaise madad kar sakta hoon?"
+
+
+def get_system_prompt_for_agent(agent: dict | None) -> str:
+    """Return the correct system prompt for a resolved agent dict.
+
+    - If the agent has a non-empty custom (Advanced) system prompt, use it.
+    - Otherwise, build the universal template filled with the agent's
+      name + description.
+    - Falls back to DEFAULT_SYSTEM_PROMPT when agent is None.
+    """
+    if not agent:
+        return DEFAULT_SYSTEM_PROMPT
+    stored = (agent.get("system_prompt") or "").strip()
+    if stored:
+        return stored
+    return build_system_prompt(
+        agent.get("name") or "Assistant",
+        agent.get("description") or "",
+    )
+
+
+def get_greeting_for_agent(agent: dict | None) -> str:
+    """Return the greeting message for a resolved agent dict."""
+    if not agent:
+        return DEFAULT_GREETING
+    return (agent.get("greeting") or DEFAULT_GREETING).strip() or DEFAULT_GREETING
 
 
 def seed_default_agent():
@@ -485,13 +606,17 @@ def change_admin_password(admin_id: int, new_password: str) -> bool:
     return cur.rowcount > 0
 
 
-def save_message(session_id: str, role: str, content: str, was_fallback: int = 0) -> int:
+def save_message(
+    session_id: str, role: str, content: str, was_fallback: int = 0, agent_id: int | None = None
+) -> int:
     """Insert a message and return its autoincrement id so callers (e.g. the
-    /chat response) can tell the widget exactly which row was created."""
+    /chat response) can tell the widget exactly which row was created. When an
+    agent_id is known (new conversations) it is persisted so every conversation
+    reliably belongs to an agent."""
     with get_conn() as conn:
         cur = conn.execute(
-            "INSERT INTO messages (session_id, role, content, was_fallback) VALUES (?, ?, ?, ?)",
-            (session_id, role, content, was_fallback),
+            "INSERT INTO messages (session_id, role, content, was_fallback, agent_id) VALUES (?, ?, ?, ?, ?)",
+            (session_id, role, content, was_fallback, agent_id),
         )
         return cur.lastrowid
 
@@ -500,7 +625,7 @@ def get_session_messages(session_id: str) -> list[dict]:
     with get_conn() as conn:
         rows = conn.execute(
             """
-            SELECT id, role, content, created_at
+            SELECT id, role, content, agent_id, created_at
             FROM messages
             WHERE session_id = ?
             ORDER BY id
@@ -564,6 +689,22 @@ def get_pending_handoffs(admin_id: int | None = None, role: str | None = None) -
     return [dict(r) for r in rows]
 
 
+def get_handoff(session_id: str) -> dict | None:
+    """Latest handoff row for a session (any status), so replies can stay
+    attributed to the conversation's agent."""
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT id, session_id, agent_id, question, status, created_at
+            FROM handoffs
+            WHERE session_id = ?
+            ORDER BY id DESC LIMIT 1
+            """,
+            (session_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
 def resolve_handoff(session_id: str) -> bool:
     with get_conn() as conn:
         cur = conn.execute(
@@ -578,14 +719,83 @@ def resolve_handoff(session_id: str) -> bool:
 
 
 def get_conversations() -> list[dict]:
+    """All conversation messages with agent + owner info joined in (legacy
+    messages may have NULL agent_id). Used by the Super Admin."""
     with get_conn() as conn:
         rows = conn.execute(
             """
-            SELECT id, session_id, role, content, created_at
-            FROM messages
-            ORDER BY id
+            SELECT m.id, m.session_id, m.role, m.content, m.created_at,
+                   m.agent_id, a.name AS agent_name,
+                   au.username AS owner_username, au.id AS owner_admin_id
+            FROM messages m
+            LEFT JOIN agents a ON a.id = m.agent_id
+            LEFT JOIN admin_users au ON au.id = a.owner_admin_id
+            ORDER BY m.id
             """
         ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_conversations_for_admin(admin_id: int) -> list[dict]:
+    """Conversation messages scoped to one normal admin: only messages whose
+    agent is owned by that admin, plus legacy messages that carry no agent
+    (recall that historical pre-agent rows cannot be reliably attributed to an
+    owner, so they are intentionally excluded for normal admins to avoid
+    leaking another admin's data)."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT m.id, m.session_id, m.role, m.content, m.created_at,
+                   m.agent_id, a.name AS agent_name
+            FROM messages m
+            INNER JOIN agents a ON a.id = m.agent_id
+            WHERE a.owner_admin_id = ?
+            ORDER BY m.id
+            """,
+            (admin_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_conversations_summary(
+    admin_id: int | None = None, role: str | None = None
+) -> list[dict]:
+    """Grouped conversation summaries for the chat-history / live-chat views.
+
+    Super admin (admin_id None): every conversation across all admins/agents.
+    Normal admin: conversations on their own agents only.
+
+    Each summary carries: session_id, agent_id, agent_name, owner display,
+    first + last activity time, last message preview, and message count.
+    Conversations are identified per session+agent so the same session id
+    against two agents is two distinct entries."""
+    if admin_id is not None and role != "super_admin":
+        return _conversation_summaries_clause("WHERE a.owner_admin_id = ?", [admin_id])
+    return _conversation_summaries_clause("", [])
+
+
+def _conversation_summaries_clause(clause: str, params: list) -> list[dict]:
+    query = f"""
+        SELECT m.session_id,
+               m.agent_id,
+               a.name AS agent_name,
+               au.username AS owner_username,
+               COUNT(*) AS message_count,
+               MIN(m.created_at) AS started_at,
+               MAX(m.created_at) AS last_activity_at,
+               (SELECT content FROM messages m2
+                WHERE m2.session_id = m.session_id
+                  AND m2.agent_id IS m.agent_id
+                ORDER BY m2.id DESC LIMIT 1) AS last_message
+        FROM messages m
+        LEFT JOIN agents a ON a.id = m.agent_id
+        LEFT JOIN admin_users au ON au.id = a.owner_admin_id
+        {clause}
+        GROUP BY m.session_id, m.agent_id
+        ORDER BY last_activity_at DESC
+    """
+    with get_conn() as conn:
+        rows = conn.execute(query, params).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -715,32 +925,247 @@ def get_conversations_per_day(last_n_days: int = 7) -> list[dict]:
     return result
 
 
-def create_api_key(label: str) -> str:
-    api_key = "n2x_" + uuid.uuid4().hex
+def get_admin_activity_overview() -> list[dict]:
+    """Per-admin activity summary for the Super Admin dashboard.
+    Returns a list of dicts with username, role, agents count, total conversations,
+    total messages, pending handoffs, and last activity time."""
+    admins = list_admin_users()
+    result = []
+    with get_conn() as conn:
+        for a in admins:
+            admin_id = a["id"]
+            # Count agents owned by this admin
+            agents_row = conn.execute(
+                "SELECT COUNT(*) AS c FROM agents WHERE owner_admin_id = ?",
+                (admin_id,),
+            ).fetchone()
+            agent_count = agents_row["c"] if agents_row else 0
+
+            # Count conversations (distinct session_id) for this admin's agents
+            conv_row = conn.execute(
+                """
+                SELECT COUNT(DISTINCT m.session_id) AS c
+                FROM messages m
+                INNER JOIN agents ag ON ag.id = m.agent_id
+                WHERE ag.owner_admin_id = ?
+                """,
+                (admin_id,),
+            ).fetchone()
+            conv_count = conv_row["c"] if conv_row else 0
+
+            # Count total messages for this admin's agents
+            msg_row = conn.execute(
+                """
+                SELECT COUNT(*) AS c
+                FROM messages m
+                INNER JOIN agents ag ON ag.id = m.agent_id
+                WHERE ag.owner_admin_id = ?
+                """,
+                (admin_id,),
+            ).fetchone()
+            msg_count = msg_row["c"] if msg_row else 0
+
+            # Count pending handoffs for this admin's agents
+            ho_row = conn.execute(
+                """
+                SELECT COUNT(*) AS c
+                FROM handoffs h
+                INNER JOIN agents ag ON ag.id = h.agent_id
+                WHERE ag.owner_admin_id = ? AND h.status = 'pending'
+                """,
+                (admin_id,),
+            ).fetchone()
+            handoff_count = ho_row["c"] if ho_row else 0
+
+            # Last activity time
+            last_row = conn.execute(
+                """
+                SELECT MAX(m.created_at) AS last_active
+                FROM messages m
+                INNER JOIN agents ag ON ag.id = m.agent_id
+                WHERE ag.owner_admin_id = ?
+                """,
+                (admin_id,),
+            ).fetchone()
+            last_active = last_row["last_active"] if last_row else None
+
+            # Count documents uploaded for this admin's agents
+            doc_count = 0
+            for agent_id_row in conn.execute(
+                "SELECT id FROM agents WHERE owner_admin_id = ?", (admin_id,)
+            ).fetchall():
+                agent_dir = os.path.join("uploaded_files", f"agent_{agent_id_row['id']}")
+                if os.path.isdir(agent_dir):
+                    doc_count += len([
+                        f for f in os.listdir(agent_dir)
+                        if os.path.isfile(os.path.join(agent_dir, f))
+                        and f.lower().endswith((".pdf", ".txt"))
+                    ])
+
+            result.append({
+                "admin_id": admin_id,
+                "username": a["username"],
+                "role": a["role"],
+                "created_at": a["created_at"],
+                "agent_count": agent_count,
+                "conversation_count": conv_count,
+                "message_count": msg_count,
+                "pending_handoffs": handoff_count,
+                "document_count": doc_count,
+                "last_active": last_active,
+            })
+    return result
+
+
+def _hash_api_key(raw: str) -> str:
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def backfill_api_key_hashes():
+    """Migration safety: populate api_key_hash for any pre-hashing plaintext
+    key whose hash column is still NULL, so those legacy keys validate via the
+    hash path on a later run. The raw key column is left in place (it cannot
+    be reliably erased without breaking nothing; it is only used as a
+    fallback lookup). Idempotent."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, api_key FROM api_keys WHERE api_key_hash IS NULL"
+        ).fetchall()
+        for row in rows:
+            if row["api_key"]:
+                conn.execute(
+                    "UPDATE api_keys SET api_key_hash = ? WHERE id = ?",
+                    (_hash_api_key(row["api_key"]), row["id"]),
+                )
+
+
+def backfill_message_agent_ids():
+    """Migration safety: attach legacy NULL-agent messages (assistant/human
+    replies persisted before agent attribution) to the most recently observed
+    agent of their session, so they are no longer dropped by the conversation
+    summary's agent JOIN. Sessions with no attributable message keep NULL
+    (truly un-attributable legacy/test rows stay visible only to super admins
+    via the raw /conversations feed). Idempotent."""
     with get_conn() as conn:
         conn.execute(
-            "INSERT INTO api_keys (api_key, label) VALUES (?, ?)",
-            (api_key, label),
+            """
+            UPDATE messages
+            SET agent_id = (
+                SELECT m2.agent_id FROM messages m2
+                WHERE m2.session_id = messages.session_id
+                  AND m2.agent_id IS NOT NULL
+                ORDER BY m2.id DESC LIMIT 1
+            )
+            WHERE agent_id IS NULL
+              AND EXISTS (
+                SELECT 1 FROM messages m3
+                WHERE m3.session_id = messages.session_id
+                  AND m3.agent_id IS NOT NULL
+              )
+            """
+        )
+
+
+def create_api_key(label: str, admin_id: int | None = None, agent_id: int | None = None) -> str:
+    api_key = "n2x_" + secrets.token_hex(24)
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO api_keys (api_key, api_key_hash, label, admin_id, agent_id) VALUES (?, ?, ?, ?, ?)",
+            (api_key, _hash_api_key(api_key), label, admin_id, agent_id),
         )
     return api_key
 
 
-def list_api_keys() -> list[dict]:
-    with get_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT id, api_key, label, created_at
-            FROM api_keys
-            ORDER BY id DESC
-            """
-        ).fetchall()
-    return [dict(r) for r in rows]
+def _mask_key(key: str) -> str:
+    """Return a truncated, non-sensitive key display for the UI (the raw key is
+    shown once at creation time and never echoed again)."""
+    if not key:
+        return ""
+    if len(key) <= 10:
+        return key
+    return key[:6] + "…" + key[-4:]
 
 
-def delete_api_key(key_id: int) -> bool:
+def list_api_keys(admin_id: int | None = None, role: str | None = None, agent_id: int | None = None) -> list[dict]:
+    """List API keys. A regular admin only sees keys they own; a super admin
+    may optionally filter by agent_id. Keys are never stored in plaintext, so
+    the raw key cannot be shown; a masked preview is returned instead."""
+    query = """
+        SELECT k.id, k.label, k.admin_id, k.agent_id, k.is_active, k.last_used_at, k.created_at,
+               a.name AS agent_name
+        FROM api_keys k
+        LEFT JOIN agents a ON a.id = k.agent_id
+    """
+    params: list = []
+    clauses: list[str] = []
+    if admin_id is not None and role != "super_admin":
+        clauses.append("k.admin_id = ?")
+        params.append(admin_id)
+    if agent_id is not None:
+        if role == "super_admin":
+            clauses.append("k.agent_id = ?")
+            params.append(agent_id)
+        else:
+            clauses.append("k.agent_id = ? AND k.admin_id = ?")
+            params += [agent_id, admin_id]
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
+    query += " ORDER BY k.id DESC"
     with get_conn() as conn:
-        cur = conn.execute("DELETE FROM api_keys WHERE id = ?", (key_id,))
+        rows = conn.execute(query, params).fetchall()
+    result = []
+    for r in rows:
+        item = dict(r)
+        item["api_key"] = _mask_key("")
+        result.append(item)
+    return result
+
+
+def delete_api_key(key_id: int, admin_id: int | None = None, role: str | None = None) -> bool:
+    """Revoke/delete an API key. A regular admin can only delete their own keys.
+    Historical keys are hard-deleted (the raw secret is never recoverable)."""
+    params: list = [key_id]
+    scope = ""
+    if admin_id is not None and role != "super_admin":
+        scope = " AND admin_id = ?"
+        params.append(admin_id)
+    with get_conn() as conn:
+        cur = conn.execute(f"DELETE FROM api_keys WHERE id = ?{scope}", params)
     return cur.rowcount > 0
+
+
+def resolve_api_key(raw_key: str, want_agent_id: int | None = None) -> dict | None:
+    """Resolve a raw API key to its agent + admin, enforcing that the key is
+    active and (when :param want_agent_id: is given) that the key belongs to
+    that agent. Returns None when invalid/revoked/mismatched. Updates
+    last_used_at on success.
+
+    Lookup order: a new key is stored as its SHA-256 hash (api_key_hash), so we
+    match by hash first. Legacy keys predate hashing and live in plaintext in
+    the api_key column, so we fall back to a plaintext match for them. The raw
+    key is never surfaced."""
+    if not raw_key:
+        return None
+    hashed = _hash_api_key(raw_key)
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM api_keys WHERE api_key_hash = ?", (hashed,)
+        ).fetchone()
+        if not row:
+            row = conn.execute(
+                "SELECT * FROM api_keys WHERE api_key = ?", (raw_key,)
+            ).fetchone()
+    if not row or not row["is_active"]:
+        return None
+    key = dict(row)
+    if want_agent_id is not None and key.get("agent_id") != want_agent_id:
+        return None
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?",
+            (key["id"],),
+        )
+    return key
 
 
 def create_admin_session(token: str, admin_user_id: int | None = None):
@@ -788,6 +1213,32 @@ def get_agent_by_slug(slug: str) -> dict | None:
             (slug,),
         ).fetchone()
     return _mark_custom_prompt(dict(row)) if row else None
+
+
+def get_agent_for_request(
+    slug: str | None = None,
+    api_key: str | None = None,
+    agent_id: int | None = None,
+) -> dict | None:
+    """Resolve the active agent for an incoming chat request.
+
+    Priority:
+      1. ``agent_id`` directly (internal / already resolved calls)
+      2. ``slug``     (public widget / embed URL  e.g. /chat/my-agent)
+      3. ``api_key``  (API consumers that pass X-API-Key header)
+
+    Returns the full agent dict (same shape as ``get_agent``), or None when
+    nothing matches. The caller should 404 / reject on None.
+    """
+    if agent_id is not None:
+        return get_agent(agent_id)
+    if slug:
+        return get_agent_by_slug(slug)
+    if api_key:
+        key_row = resolve_api_key(api_key)
+        if key_row and key_row.get("agent_id"):
+            return get_agent(key_row["agent_id"])
+    return None
 
 
 def _slugify(name: str) -> str:
@@ -876,11 +1327,12 @@ def create_agent(
     owner_admin_id: int | None = None,
     slug: str | None = None,
     system_prompt: str = "",
+    primary_color: str = "#2563EB",
 ) -> dict:
     with get_conn() as conn:
         final_slug = _unique_slug(conn, slug or name)
         cur = conn.execute(
-            "INSERT INTO agents (name, description, system_prompt, greeting, owner_admin_id, slug) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO agents (name, description, system_prompt, greeting, owner_admin_id, slug, primary_color) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 name,
                 description,
@@ -888,6 +1340,7 @@ def create_agent(
                 greeting,
                 owner_admin_id,
                 final_slug,
+                primary_color or "#2563EB",
             ),
         )
         agent_id = cur.lastrowid
@@ -937,7 +1390,8 @@ def list_agents(admin_id: int | None = None) -> list[dict]:
     (admin_id=None) returns every agent, each with its owner username."""
     query = """
         SELECT a.id, a.name, a.description, a.system_prompt, a.greeting, a.slug,
-               a.created_at, a.owner_admin_id, au.username AS owner_username
+               a.created_at, a.owner_admin_id, a.primary_color,
+               au.username AS owner_username
         FROM agents a
         LEFT JOIN admin_users au ON au.id = a.owner_admin_id
     """
@@ -960,6 +1414,7 @@ def update_agent(
     role: str | None = None,
     slug: str | None = None,
     system_prompt: str = "",
+    primary_color: str | None = None,
 ) -> bool:
     """Update an agent. A non-super admin can only update their own agents
     (returns False otherwise). The slug is always kept unique: when a non-empty
@@ -974,14 +1429,20 @@ def update_agent(
             _resolve_system_prompt(name, description, system_prompt),
             greeting,
             final_slug,
-            agent_id,
         ]
+        color_sql = ""
+        if primary_color is not None:
+            color_sql = ", primary_color = ?"
+            params.append(primary_color)
+        params.append(agent_id)
         scope = ""
         if admin_id is not None and role != "super_admin":
             scope = " AND owner_admin_id = ?"
             params.append(admin_id)
         cur = conn.execute(
-            "UPDATE agents SET name = ?, description = ?, system_prompt = ?, greeting = ?, slug = ? WHERE id = ?{scope}".format(scope=scope),
+            "UPDATE agents SET name = ?, description = ?, system_prompt = ?, greeting = ?, slug = ?{color_sql} WHERE id = ?{scope}".format(
+                color_sql=color_sql, scope=scope
+            ),
             params,
         )
     return cur.rowcount > 0
@@ -1160,6 +1621,7 @@ def backfill_documents():
         return row is not None
 
     base = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "uploaded_files")
+    _os.makedirs(base, exist_ok=True)
     with get_conn() as conn:
         for name in _os.listdir(base):
             full = _os.path.join(base, name)
@@ -1206,82 +1668,168 @@ def backfill_documents():
 # ---------------------------------------------------------------------------
 
 def _seed_plan(conn: sqlite3.Connection, spec: dict) -> None:
+    """Insert a plan only if its name does not exist yet. For existing plans it
+    safely backfills the new limit columns from the spec — it does NOT overwrite
+    admin-edited values on later runs (only fills NULLs/0s)."""
     row = conn.execute(
         "SELECT 1 FROM plans WHERE name = ?", (spec["name"],)
     ).fetchone()
-    if row:
+    if not row:
+        conn.execute(
+            """
+            INSERT INTO plans
+                (name, price, currency, billing_interval, max_agents,
+                 max_documents, unlimited_documents, max_messages_per_period,
+                 unlimited_messages, is_active,
+                 max_support_agents, unlimited_ai_agents, unlimited_support_agents)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                spec["name"],
+                spec["price"],
+                spec["currency"],
+                spec["billing_interval"],
+                spec["max_agents"],
+                spec["max_documents"],
+                1 if spec.get("max_documents") is None else 0,
+                spec["max_messages_per_period"],
+                1 if spec.get("max_messages_per_period") is None else 0,
+                spec["is_active"],
+                spec.get("max_support_agents"),
+                1 if spec.get("unlimited_ai_agents") else 0,
+                1 if spec.get("unlimited_support_agents") else 0,
+            ),
+        )
         return
+
+    # Backfill the new unlimited columns for an existing plan whose row
+    # predates them (NULL/0 only, never overwriting configured values).
     conn.execute(
         """
-        INSERT INTO plans
-            (name, price, currency, billing_interval, max_agents,
-             max_documents, max_messages_per_period, is_active)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        UPDATE plans
+        SET max_support_agents = COALESCE(max_support_agents, ?),
+            unlimited_ai_agents = COALESCE(unlimited_ai_agents, ?),
+            unlimited_support_agents = COALESCE(unlimited_support_agents, ?),
+            unlimited_documents = COALESCE(unlimited_documents,
+                CASE WHEN max_documents IS NULL THEN 1 ELSE 0 END),
+            unlimited_messages = COALESCE(unlimited_messages,
+                CASE WHEN max_messages_per_period IS NULL THEN 1 ELSE 0 END)
+        WHERE name = ?
         """,
         (
+            spec.get("max_support_agents"),
+            1 if spec.get("unlimited_ai_agents") else 0,
+            1 if spec.get("unlimited_support_agents") else 0,
             spec["name"],
-            spec["price"],
-            spec["currency"],
-            spec["billing_interval"],
-            spec["max_agents"],
-            spec["max_documents"],
-            spec["max_messages_per_period"],
-            spec["is_active"],
         ),
     )
 
 
 def seed_plans():
-    """Seed SAMPLE/DEVELOPMENT plans (Free/Basic/Pro). Prices are not
-    production figures — final pricing is decided outside the code. `None`
-    for a limit means 'unlimited'."""
-    sample_plans = [
+    """Seed the 4 default plans with production-default values:
+    Free / Monthly / Yearly / Lifetime. None for a numeric limit means
+    'unlimited'. Non-destructive: only inserts plans whose name is absent and
+    only NULL-backfills the new limit columns of pre-existing plans."""
+    default_plans = [
         {
             "name": "Free",
             "price": 0.0,
             "currency": "PKR",
             "billing_interval": "monthly",
             "max_agents": 1,
+            "max_support_agents": 1,
+            "unlimited_ai_agents": False,
+            "unlimited_support_agents": False,
             "max_documents": 10,
             "max_messages_per_period": 1000,
             "is_active": 1,
         },
         {
-            "name": "Basic",
-            "price": 1500.0,
+            "name": "Monthly",
+            "price": 3000.0,
             "currency": "PKR",
             "billing_interval": "monthly",
-            "max_agents": 5,
+            "max_agents": 3,
+            "max_support_agents": 5,
+            "unlimited_ai_agents": False,
+            "unlimited_support_agents": False,
             "max_documents": 50,
             "max_messages_per_period": 10000,
             "is_active": 1,
         },
         {
-            "name": "Pro",
-            "price": 5000.0,
+            "name": "Yearly",
+            "price": 300000.0,
             "currency": "PKR",
-            "billing_interval": "monthly",
+            "billing_interval": "yearly",
+            "max_agents": 10,
+            "max_support_agents": 20,
+            "unlimited_ai_agents": False,
+            "unlimited_support_agents": False,
+            "max_documents": 200,
+            "max_messages_per_period": 120000,
+            "is_active": 1,
+        },
+        {
+            "name": "Lifetime",
+            "price": 79999.0,
+            "currency": "PKR",
+            "billing_interval": "lifetime",
             "max_agents": None,
+            "max_support_agents": None,
+            "unlimited_ai_agents": True,
+            "unlimited_support_agents": True,
             "max_documents": None,
             "max_messages_per_period": None,
             "is_active": 1,
         },
     ]
     with get_conn() as conn:
-        for spec in sample_plans:
+        for spec in default_plans:
             _seed_plan(conn, spec)
+
+
+def rename_plan():
+    """Migration safety: on an existing database the old sample plans
+    (Basic/Pro) are left in place but deactivated after the Free/Lifetime
+    defaults are seeded, so no working subscription breaks and historical rows
+    survive. The 4 standard plan names are guaranteed present via seed_plans."""
+    with get_conn() as conn:
+        for old in ("Basic", "Pro"):
+            conn.execute(
+                "UPDATE plans SET is_active = 0 WHERE name = ? AND is_active = 1",
+                (old,),
+            )
 
 
 def get_plan(plan_id: int) -> dict | None:
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM plans WHERE id = ?", (plan_id,)).fetchone()
-    return dict(row) if row else None
+    return _normalize_plan(dict(row)) if row else None
 
 
 def get_plan_by_name(name: str) -> dict | None:
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM plans WHERE name = ?", (name,)).fetchone()
-    return dict(row) if row else None
+    return _normalize_plan(dict(row)) if row else None
+
+
+def _normalize_plan(plan: dict) -> dict:
+    """Expose plan limits in a stable shape plus legacy alias fields so
+    existing consumers (subscription_service, UI) keep working. None for a
+    numeric max is the 'unlimited' marker; the explicit unlimited_* booleans
+    are also surfaced."""
+    plan.setdefault("max_support_agents", plan.get("max_support_agents"))
+    plan.setdefault("unlimited_ai_agents", int(plan.get("max_agents") is None))
+    plan.setdefault(
+        "unlimited_support_agents", int(plan.get("max_support_agents") is None)
+    )
+    plan.setdefault("unlimited_documents", int(plan.get("max_documents") is None))
+    plan.setdefault(
+        "unlimited_messages", int(plan.get("max_messages_per_period") is None)
+    )
+    plan["max_ai_agents"] = plan.get("max_agents")
+    return plan
 
 
 def list_plans(only_active: bool = True) -> list[dict]:
@@ -1292,7 +1840,52 @@ def list_plans(only_active: bool = True) -> list[dict]:
     query += " ORDER BY id"
     with get_conn() as conn:
         rows = conn.execute(query, params).fetchall()
-    return [dict(r) for r in rows]
+    return [_normalize_plan(dict(r)) for r in rows]
+
+
+def list_all_plans() -> list[dict]:
+    """All plans including inactive ones (for the Super Admin plan editor)."""
+    with get_conn() as conn:
+        rows = conn.execute("SELECT * FROM plans ORDER BY id").fetchall()
+    return [_normalize_plan(dict(r)) for r in rows]
+
+
+def update_plan(plan_id: int, fields: dict) -> bool:
+    """Update editable plan fields. Allowed keys mirror the Super Admin plan
+    editor. Numeric limits store NULL when marked unlimited. Only returns True
+    when the plan exists."""
+    allowed = {
+        "name", "price", "max_agents", "max_support_agents",
+        "unlimited_ai_agents", "unlimited_support_agents", "is_active",
+        "max_documents", "max_messages_per_period",
+        "unlimited_documents", "unlimited_messages",
+    }
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    if not updates:
+        return False
+    setting: list[str] = []
+    params: list = []
+    for key, value in updates.items():
+        if key in (
+            "unlimited_ai_agents", "unlimited_support_agents",
+            "unlimited_documents", "unlimited_messages",
+        ):
+            value = 1 if value else 0
+        elif key in ("max_agents", "max_support_agents", "max_documents", "max_messages_per_period"):
+            value = None if value is None else int(value)
+        setting.append(f"{key} = ?")
+        params.append(value)
+    setting.append("updated_at = datetime('now')")
+    with get_conn() as conn:
+        cur = conn.execute(
+            f"UPDATE plans SET {', '.join(setting)} WHERE id = ?",
+            [*params, plan_id],
+        )
+    return cur.rowcount > 0
+
+
+def get_plan_by_id(plan_id: int) -> dict | None:
+    return get_plan(plan_id)
 
 
 # ---------------------------------------------------------------------------

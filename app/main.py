@@ -1,10 +1,11 @@
 import os
 import json
 import logging
+import threading
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from app.db import init_db, get_agent_by_slug
 from app.routes import upload, chat, admin
@@ -16,6 +17,8 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
+
+os.makedirs("uploaded_files", exist_ok=True)
 
 init_db()
 
@@ -33,6 +36,75 @@ app.include_router(chat.router)
 app.include_router(admin.router)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+@app.on_event("startup")
+def _preload_models():
+    """Pre-load the embedding model at startup so the first /chat request is
+    not slow (a slow first embed can make the frontend time out and show the
+    "server se connect nahi ho paya" network error)."""
+    try:
+        from app.services.embeddings import _get_model
+
+        _get_model()
+        logging.getLogger(__name__).info("Embedding model preloaded")
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Embedding model failed to preload; will retry lazily on first request"
+        )
+
+    # Background thread: reset exhausted Groq API keys every 24 hours so they
+    # become usable again without requiring a server restart.
+    _start_key_reset_timer()
+
+
+_KEY_RESET_INTERVAL = 24 * 60 * 60  # 24 hours in seconds
+
+
+def _start_key_reset_timer():
+    """Schedule a periodic reset of exhausted Groq API keys."""
+    from app.services.llm import _reset_exhausted_keys
+
+    def _reset_loop():
+        while True:
+            threading.Event().wait(_KEY_RESET_INTERVAL)
+            _reset_exhausted_keys()
+            logging.getLogger(__name__).info(
+                "Exhausted Groq API keys reset (24h cycle)."
+            )
+
+    t = threading.Thread(target=_reset_loop, daemon=True, name="key-reset")
+    t.start()
+    logging.getLogger(__name__).info(
+        "Groq API key auto-reset background task started (every 24h)."
+    )
+
+
+@app.exception_handler(Exception)
+async def _global_exception_handler(request: Request, exc: Exception):
+    """Never let an unhandled exception escape as a non-JSON response.
+
+    The chat widget only does ``res.json()``; any HTML error page (500/503
+    from a crashing model or an upstream outage) makes ``json()`` throw and
+    the UI shows a misleading connection error while the server actually
+    responded. Always answer with structured JSON instead."""
+    logging.getLogger(__name__).exception(
+        "Unhandled exception on %s %s", request.method, request.url.path
+    )
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": "Internal server error",
+            "answer": (
+                "Mujhe filhal jawaab dene mein dikkat aa rahi hai. "
+                "Thodi der baad dobara try karein ya hamari team se "
+                "info@n2xsystem.com par rabta karein."
+            ),
+            "sources_used": 0,
+            "message_id": None,
+            "user_message_id": None,
+        },
+    )
 
 
 def _html_escape(text: str) -> str:
@@ -74,6 +146,7 @@ def agent_chat_page(slug: str):
         "name": agent["name"],
         "greeting": agent.get("greeting") or "",
         "slug": agent["slug"],
+        "primary_color": agent.get("primary_color") or "#2563EB",
     }
     html = (
         AGENT_CHAT_TEMPLATE

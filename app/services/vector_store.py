@@ -22,10 +22,16 @@ CONTACT_QUERY_WORDS = {
     "number", "call", "where", "head",
 }
 
-_CONTACT_CHUNK_PATTERN = re.compile(
-    r"(email|e-?mail|phone|whatsapp|contact|address|office|location|"
-    r"head ?office|raabta|plot|street|www\.[a-z0-9-]+|\.com\b|"
-    r"\+[\d][\d\s-]{5,}|\b\d{4,}[-.\s]?\d{3,})",
+# Contact/address signals are matched WORD-BOUNDED and require a real address
+# (an email address or a phone/cell number) or TWO distinct contact keywords.
+# This avoids the false positives that a naive substring flag produced on
+# ordinary content: "email" inside "CRM, email, quotations", "plot" inside
+# "Matplotlib", or a bare "www." project link never mark a chunk as contact.
+_CONTACT_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+_CONTACT_PHONE_RE = re.compile(r"(?<![\d-])\+?\d{1,3}[\s-]?\d{2,4}(?:[\s-]?\d{3,4}){1,2}(?![\d-])")
+_CONTACT_KEYWORD_RE = re.compile(
+    r"\b(?:email|e-?mail|phone|whatsapp|contact|address|office|location|"
+    r"head ?office|raabta|street|plot|block|sector)\b",
     re.IGNORECASE,
 )
 
@@ -34,6 +40,27 @@ _CONTACT_SIGNAL_WORDS = (
     "location", "raabta", "plot", "street", "call",
 )
 
+# Generic filler/question words that must NOT trigger the heading-keyword
+# boost. Without this filter, an Urdu question like "aapka CEO kon hai?"
+# would lexically match the first chunk containing "hai" (or "kon"), dragging
+# an unrelated section into the retrieval context and making the bot answer
+# from irrelevant content.
+_HEADING_KEYWORD_STOPWORDS = {
+    "hai", "ho", "hain", "tha", "thi", "the", "hoga", "hogi", "honge", "hon",
+    "kon", "kaun", "kya", "kyu", "kion", "kyon", "kese", "kaise", "kesi", "kis",
+    "konsa", "konsi", "karta", "karti", "karte", "karna", "karo", "karein",
+    "kijiye", "karu", "kare", "aap", "aapka", "aapki", "aapke", "tum", "tumhara",
+    "tumhari", "mujhe", "muje", "mere", "main", "mein", "hum", "humara", "humari",
+    "mera", "meri", "is", "us", "ye", "yeh", "wo", "woh", "aur", "nahi", "na",
+    "to", "bhi", "batao", "bataye", "btaiye", "batayen", "bolo", "du", "dijiye",
+    "de", "do", "theek", "acha", "achha", "sahi", "chahiye", "kafi",
+    "what", "when", "where", "why", "how", "who", "which", "whom", "whose",
+    "does", "do", "did", "doing", "is", "are", "am", "was", "were", "be",
+    "the", "and", "or", "of", "to", "for", "with", "please", "plz", "can",
+    "tell", "give", "get", "have", "has", "had", "that", "this", "these",
+    "those", "please", "hey", "hi", "hello",
+}
+
 
 def is_contact_query(query_text: str) -> bool:
     """True when a user question looks like a contact/address request."""
@@ -41,10 +68,144 @@ def is_contact_query(query_text: str) -> bool:
     return bool(tokens & CONTACT_QUERY_WORDS)
 
 
+# Dictionaries for Roman-Urdu/Hinglish -> English semantic normalization.
+# The embedding model (all-MiniLM-L6-v2) is English-only, and common Hinglish
+# filler/stop words ("jo", "kiye", "kara") drown the few English tokens in
+# "projects k naam btao", pushing the query embedding well below the vector
+# threshold. Normalization strips the filler and substitutes English keywords
+# so the query semantically lands near its topic sections.
+_NORMALIZE_PHRASES: list[tuple[str, str]] = [
+    (r"\bnaam bata(?:o|au|ye)?\b", "names"),
+    (r"\b(?:name|naam)s?\b", "names"),
+    (r"\bnaam\b", "names"),
+    (r"\bbt(?:a|ao|aiye|aye)?\b", "tell"),
+    (r"\bbata(?:o|u|ye|yen|na)?\b", "tell"),
+    (r"\bbtaiye\b", "tell"),
+    (r"\btell\b", "tell"),
+    (r"\bprojects?\b", "projects"),
+    (r"\bprojcts?\b", "projects"),
+    (r"\bporjects?\b", "projects"),
+    (r"\bpojects?\b", "projects"),
+    (r"\bproejcts?\b", "projects"),
+    (r"\bkiye\b", "done"),
+    (r"\bkya? work kiya\b", "projects worked on"),
+    (r"\bjo\b", ""),
+    (r"\bjojo\b", ""),
+    (r"\blist\b", "list all"),
+    (r"\btotal\b", "all"),
+    (r"\bbt(?:a|ao)\b", "list all"),
+    (r"\bkarnte\b", "does"),
+    (r"\bkar?te\b", ""),
+    (r"\bkarte\b", "do"),
+    (r"\bkarta\b", "does"),
+    (r"\bkarna\b", "do"),
+    (r"\bhain\b", ""),
+    (r"\bhai\b", ""),
+    (r"\bho\b", ""),
+    (r"\bthay\b", ""),
+    (r"\bthe\b", ""),
+    (r"\bgyei?\b", "went"),
+    (r"\bgayi\b", "made"),
+    (r"\bgya\b", "made"),
+    (r"\bkiya\b", "did"),
+    (r"\bkar(kar|akh)?\b", "did"),
+    (r"\bse\b", ""),
+    (r"\bko\b", ""),
+    (r"\bbi\b", ""),
+    (r"\bto\b", ""),
+    (r"\bka\b", ""),
+    (r"\bki\b", ""),
+    (r"\bke\b", ""),
+    (r"\bchahiye\b", "need"),
+    (r"\bzabi\b", "service"),
+    (r"\bservices?\b", "services"),
+    (r"\bpricing\b", "pricing"),
+    (r"\bprice\b", "pricing"),
+    (r"\bdaam\b", "pricing"),
+    (r"\bkitne\b", "how many"),
+    (r"\bkitna\b", "how much"),
+    (r"\bkitni\b", "how many"),
+    (r"\bsaab\b", "all"),
+    (r"\bsare\b", "all"),
+    (r"\bsari\b", "all"),
+    (r"\bsab\b", "all"),
+    (r"\bportfolio\b", "portfolio"),
+    (r"\bkaam\b", "projects"),
+    (r"\bcompany\b", "company"),
+    (r"\babout\b", "about"),
+    (r"\bke baare mein\b", "about"),
+    (r"\bkon\b", "who"),
+    (r"\bkaun\b", "who"),
+    (r"\bkya hai\b", "what is"),
+    (r"\bkya hain\b", "what is"),
+    (r"\bkaise\b", "how"),
+    (r"\bkese\b", "how"),
+    (r"\bkasai\b", "how"),
+    (r"\bkyun\b", "why"),
+    (r"\bkyu\b", "why"),
+    (r"\bkab\b", "when"),
+    (r"\bkahan\b", "where"),
+    (r"\bkaha\b", "where"),
+    (r"\bexperience\b", "experience"),
+    (r"\bteam\b", "team"),
+    (r"\bcontact\b", "contact"),
+    (r"\bemail\b", "email"),
+    (r"\bphone\b", "phone"),
+    (r"\bnumber\b", "number"),
+    (r"\baddress\b", "address"),
+    (r"\boffice\b", "office"),
+    (r"\blocation\b", "location"),
+    (r"\bwebsite\b", "website"),
+    (r"\blink\b", "link"),
+    (r"\bsocial\b", "social media"),
+    (r"\bhandle\b", "social media"),
+    (r"\bprofile\b", "profile"),
+]
+
+
+def normalize_query(query_text: str) -> str:
+    """Translate common Hinglish/Roman-Urdu fillers into English keywords so
+    the (English-only) embedding model can match the query to its topic.
+
+    Example:
+      "projects k naam btao jo jo kiye"  ->  "projects k names tell  done"
+      "pojects k naam btao"              ->  "pojects k names tell"
+
+    Unknown words pass through untouched; the function is additive and never
+    strips English content.
+    """
+    if not query_text:
+        return query_text
+    text = " " + query_text.lower().strip() + " "
+    for pattern, replacement in _NORMALIZE_PHRASES:
+        text = re.sub(pattern, f" {replacement} ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
 def is_contact_chunk(text: str) -> bool:
-    """True when a knowledge chunk carries contact details (email/phone/
-    address/location): such chunks are force-included for contact queries."""
-    return bool(_CONTACT_CHUNK_PATTERN.search(text or ""))
+    """True when a knowledge chunk genuinely carries contact details.
+
+    A chunk counts as contact only when it contains a real email address or a
+    phone number, or when it mentions TWO DISTINCT contact keywords (e.g.
+    "address" + "plot"). A single incidental keyword — "email" as a workflow
+    feature, "Matplotlib" containing "plot" — never qualifies, because such
+    false positives would hide ordinary content from the heading-keyword boost
+    and paddle ordinary chunks into every contact answer.
+    """
+    text = text or ""
+    if _CONTACT_EMAIL_RE.search(text) or _CONTACT_PHONE_RE.search(text):
+        return True 
+    keywords = {match.group(0).lower() for match in _CONTACT_KEYWORD_RE.finditer(text)}
+    return len(keywords) >= 2
+
+
+def _strong_contact_signal(text: str) -> bool:
+    """A chunk carries an explicit email address or phone number."""
+    return bool(
+        (text or "")
+        and (_CONTACT_EMAIL_RE.search(text) or _CONTACT_PHONE_RE.search(text))
+    )
 
 
 def _contact_score(text: str) -> int:
@@ -164,19 +325,120 @@ def delete_points_by_agent(agent_id: int):
     )
 
 def _scope_filter(agent_id: int | None) -> Filter:
-    """Filter that limits retrieval to the right knowledge scope:
-    - a specific agent: that agent's chunks PLUS the shared (agent_id empty) ones
-    - no agent (shared chat): only the shared chunks"""
+    """Retrieval scope is STRICTLY per-agent: an agent only ever sees vectors
+    whose payload.agent_id equals its own id. There is intentionally NO
+    shared/global knowledge scope, so NULL-agent vectors are never included in
+    an agent's retrieval (they belong to no agent and must not leak).
+    A request without an agent id receives nothing — it cannot scope itself to
+    any agent's data, so it matches an impossible value."""
     if agent_id is not None:
         return Filter(
-            should=[
-                IsEmptyCondition(is_empty=PayloadField(key="agent_id")),
-                FieldCondition(key="agent_id", match=MatchValue(value=agent_id)),
-            ]
+            must=[FieldCondition(key="agent_id", match=MatchValue(value=agent_id))]
         )
     return Filter(
-        must=[IsEmptyCondition(is_empty=PayloadField(key="agent_id"))]
+        must=[FieldCondition(key="agent_id", match=MatchValue(value=-1))]
     )
+
+
+# Aggregate/counting questions ask for a whole list ("how many", "list all",
+# "kitne"), so the section whose heading matched must contribute its ENTIRE
+# entry family (every project/job/product chunk), not just the container that
+# carries the heading keyword.
+_AGGREGATE_QUESTION_RE = re.compile(
+    r"\b(how many|how much|list all|list|total|each|all|kitne|kitna|kitni|"
+    r"kittne|saare|sab|tamam|poore)\b",
+    re.IGNORECASE,
+)
+
+# A chunk whose first line is an ALL-CAPS block starts a NEW major section; the
+# entry family of the matched section ends there.
+_MAJOR_HEADING_RE = re.compile(r"^[A-Z][A-Z0-9/& .(){}+:'%-]{2,}$")
+
+
+def is_aggregate_question(query_text: str) -> bool:
+    """True when the user wants a list/count (whole section), not one fact."""
+    return bool(_AGGREGATE_QUESTION_RE.search(query_text or ""))
+
+
+def _aggregate_section_family(matched_text: str, query_filter: Filter, limit: int = 6) -> list[str]:
+    """Return the sibling entry chunks that follow a matched section container.
+
+    When an aggregate question matches a section heading ("PROJECTS"),
+    counting the entries requires the entries themselves — the child chunks
+    stored right after the container in the same document. Chunks are ordered
+    by their ``chunk_index`` payload (legacy uploads carry none and fall back
+    to plain semantic retrieval). The family ends at the next ALL-CAPS major
+    section heading.
+    """
+    try:
+        page, _ = client.scroll(
+            collection_name=COLLECTION_NAME,
+            scroll_filter=query_filter,
+            limit=200,
+            with_payload=True,
+        )
+    except Exception:
+        logger.exception("Aggregate family scan failed")
+        return []
+    points = [p for p in page if (p.payload or {}).get("text")]
+    matched = next(
+        (p for p in points if (p.payload or {}).get("text") == matched_text), None
+    )
+    if matched is None:
+        return []
+    matched_payload = matched.payload or {}
+    matched_index = matched_payload.get("chunk_index")
+    filename = matched_payload.get("filename")
+    if matched_index is None or not filename:
+        return []
+    indexed: list[tuple[int, str]] = []
+    seen_texts: set[str] = set()
+    for point in points:
+        payload = point.payload or {}
+        text = payload.get("text", "")
+        if (
+            not text
+            or payload.get("filename") != filename
+            or payload.get("chunk_index") is None
+            or text in seen_texts
+        ):
+            continue
+        seen_texts.add(text)
+        indexed.append((int(payload["chunk_index"]), text))
+    family: list[str] = []
+    for index, text in sorted(indexed):
+        if index <= matched_index:
+            continue
+        if len(family) >= limit:
+            break
+        first_line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+        if _MAJOR_HEADING_RE.match(first_line):
+            break
+        family.append(text)
+    return family
+
+
+def _expand_listing_cluster(chunks: list[dict], top_k: int) -> list[dict]:
+    """Keep the extra chunks that scored close to the best result.
+
+    Documents laid out as repeated entries (several projects, products, job
+    roles, or simulation results) make their sections score within a narrow
+    band; 'how many'/'list all' questions then need the whole band, not just
+    the top few. When later chunks are within a relative band of the top score
+    they are kept too, up to a small context budget. A document with one
+    dominant match (the N2X services list, a lookup) expands by nothing.
+    """
+    if len(chunks) <= top_k:
+        return chunks
+    top = chunks[0]["score"]
+    band = max(top * 0.65, top - 0.18)
+    kept = chunks[:top_k]
+    for chunk in chunks[top_k:]:
+        if len(kept) >= top_k * 2:
+            break
+        if chunk["score"] >= band:
+            kept.append(chunk)
+    return kept
 
 
 def search_similar_chunks(query_embedding: list[float], top_k: int = 3, agent_id: int | None = None, score_threshold: float = 0.15, query_text: str | None = None) -> tuple[list[dict], bool]:
@@ -191,13 +453,17 @@ def search_similar_chunks(query_embedding: list[float], top_k: int = 3, agent_id
     1. a heading keyword boost (query word matches a chunk's heading/content),
     2. a CONTACT boost: when the query asks about contact/address/office/baat,
        contact-typed chunks are force-included regardless of vector score.
+    Chunks whose scores cluster near the top result are also kept (listing
+    support), so 'list all / how many' questions see the whole list.
     """
+    if query_text:
+        query_text = normalize_query(query_text)
     query_filter = _scope_filter(agent_id)
     try:
         results = client.search(
             collection_name=COLLECTION_NAME,
             query_vector=query_embedding,
-            limit=top_k,
+            limit=max(top_k, 12),
             query_filter=query_filter,
             score_threshold=score_threshold,
         )
@@ -211,6 +477,22 @@ def search_similar_chunks(query_embedding: list[float], top_k: int = 3, agent_id
         if (result.payload or {}).get("text")
     ]
 
+    # Dedupe by content: identical text can exist as multiple points (e.g.
+    # repeated uploads), which would otherwise flood the LLM context.
+    seen: set[str] = set()
+    unique_chunks: list[dict] = []
+    for chunk in chunks:
+        if chunk["text"] in seen:
+            continue
+        seen.add(chunk["text"])
+        unique_chunks.append(chunk)
+    chunks = unique_chunks
+
+    # Listing support: several chunks tied near the top score means the answer
+    # needs the whole cluster (all projects, all matches), not just top_k of
+    # them. Kept short-list enumerations inside a bounded context budget.
+    chunks = _expand_listing_cluster(chunks, top_k)
+
     if query_text:
         # Contact/address queries: force the agent's CONTACT chunks in even when
         # their vector score is low, so "baat/office/address/kaha" never fails.
@@ -218,10 +500,27 @@ def search_similar_chunks(query_embedding: list[float], top_k: int = 3, agent_id
             chunks = _merge_contact_chunks(chunks, query_filter, query_text, top_k)
 
         heading_match = _heading_keyword_match(query_text, query_filter)
-        if heading_match and heading_match not in [c["text"] for c in chunks]:
-            top_score = chunks[0]["score"] if chunks else 0.0
-            chunks.insert(0, {"text": heading_match, "score": top_score + 1.0})
-            chunks = chunks[: top_k + 1]
+        if heading_match:
+            texts = {c["text"] for c in chunks}
+            if heading_match not in texts:
+                top_score = chunks[0]["score"] if chunks else 0.0
+                chunks.insert(0, {"text": heading_match, "score": top_score + 1.0})
+            # Listing/counting questions need the whole entry family of the
+            # matched section (every project, not just the container that
+            # carries the heading keyword).
+            if is_aggregate_question(query_text):
+                top_score = chunks[0]["score"] if chunks else 0.0
+                for offset, family_text in enumerate(
+                    _aggregate_section_family(heading_match, query_filter, limit=max(top_k * 2, 6))
+                ):
+                    if family_text in texts:
+                        continue
+                    texts.add(family_text)
+                    chunks.append(
+                        {"text": family_text, "score": top_score - 0.5 - offset * 0.1}
+                    )
+
+    chunks = chunks[: min(len(chunks), max(top_k * 2, 6))]
 
     return chunks, True
 
@@ -229,28 +528,42 @@ def search_similar_chunks(query_embedding: list[float], top_k: int = 3, agent_id
 def _merge_contact_chunks(chunks: list[dict], query_filter: Filter, query_text: str, top_k: int) -> list[dict]:
     """Prepend up to two contact-typed chunks for contact/address queries, then
     cap the result at top_k + inserted chunks (deduping against the semantic
-    results). A failure here is non-fatal: plain retrieval still proceeds."""
+    results). A failure here is non-fatal: plain retrieval still proceeds.
+
+    Contact chunks are identified at RUNTIME by scanning their text, because
+    the stored ``is_contact`` payload flag predates some legacy uploads and
+    cannot be relied on."""
     try:
-        contact_filter = Filter(
-            must=[FieldCondition(key=CONTACT_INDEX_KEYWORD, match=MatchValue(value=1))]
-            + (list(query_filter.must) if query_filter.must else []),
-            should=query_filter.should,
-        )
-        result = client.scroll(
-            collection_name=COLLECTION_NAME,
-            scroll_filter=contact_filter,
-            limit=20,
-            with_payload=True,
-        )
+        points: list = []
+        next_offset = None
+        while True:
+            args: dict = dict(
+                collection_name=COLLECTION_NAME,
+                scroll_filter=query_filter,
+                limit=200,
+                with_payload=True,
+            )
+            if next_offset is not None:
+                args["offset"] = next_offset
+            page, next_offset = client.scroll(**args)
+            points.extend(page)
+            if not next_offset or len(points) >= 1000:
+                break
     except Exception:
         logger.exception("Contact chunk fetch failed")
         return chunks
 
-    candidates = [
-        (point.payload or {}).get("text", "")
-        for point in result[0]
-        if (point.payload or {}).get("text")
-    ]
+    candidates = []
+    seen_texts: set[str] = set()
+    for point in points:
+        text = (point.payload or {}).get("text", "")
+        if not text or text in seen_texts:
+            continue
+        seen_texts.add(text)
+        if is_contact_chunk(text) and (
+            _contact_score(text) >= 1 or _strong_contact_signal(text)
+        ):
+            candidates.append(text)
     candidates.sort(key=lambda text: _contact_score(text), reverse=True)
 
     existing = {c["text"] for c in chunks}
@@ -284,7 +597,7 @@ def _heading_keyword_match(query_text: str, query_filter: Filter | None, exclude
     tokens = {
         token
         for token in re.findall(r"[a-zA-Z0-9]+", query_text.lower())
-        if len(token) >= 3
+        if len(token) >= 3 and token not in _HEADING_KEYWORD_STOPWORDS
     }
     if not tokens:
         return None
@@ -297,7 +610,7 @@ def _heading_keyword_match(query_text: str, query_filter: Filter | None, exclude
         result = client.scroll(
             collection_name=COLLECTION_NAME,
             scroll_filter=query_filter,
-            limit=100,
+            limit=300,
             with_payload=True,
         )
         for point in result[0]:
@@ -307,7 +620,10 @@ def _heading_keyword_match(query_text: str, query_filter: Filter | None, exclude
             text = payload.get("text", "")
             lines = [line.strip() for line in text.splitlines() if line.strip()]
             haystack = "\n".join(lines[:6]).lower()
-            if haystack and any(token in haystack for token in tokens):
+            if haystack and any(
+                re.search(r"(?<![a-z0-9])" + re.escape(token) + r"(?![a-z0-9])", haystack)
+                for token in tokens
+            ):
                 return text
     except Exception:
         logger.exception("Heading keyword scan failed")

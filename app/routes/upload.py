@@ -19,12 +19,11 @@ from app.db import (
 router = APIRouter()
 UPLOAD_DIR = "uploaded_files"
 ALLOWED_EXTENSIONS = (".pdf", ".txt")
-TEXT_EXTRACTION_MIN_CHARS = 40
 
 NO_TEXT_EXTRACTED_MESSAGE = (
-    "Is file se koi text nahi mila - ye scanned/image-based PDF ho sakti hai "
-    "jisme sirf images hain. Text version (.txt) bana kar upload karein, ya OCR "
-    "enable karne ke liye Tesseract aur Poppler install karein."
+    "Is file se koi text extract nahi ho saka. Agar ye scanned/image-based PDF hai "
+    "to OCR support nahi hai. Please text-based PDF upload karein ya file ko .txt "
+    "mein convert karke upload karein."
 )
 
 
@@ -66,8 +65,7 @@ async def upload_pdf(
             raise HTTPException(status_code=403, detail=str(exc))
 
     upload_dir = agent_upload_dir(agent_id) if agent_id is not None else UPLOAD_DIR
-    if agent_id is not None:
-        os.makedirs(upload_dir, exist_ok=True)
+    os.makedirs(upload_dir, exist_ok=True)
 
     file_path_in_scope = (
         os.path.join(agent_upload_dir(agent_id), file.filename)
@@ -94,10 +92,9 @@ async def upload_pdf(
             shutil.copyfileobj(file.file, buffer)
         set_document_file_size(document_id, os.path.getsize(file_path))
 
-        # Extract text, falling back to OCR for scanned/image-only PDFs. A file
-        # that yields nothing (or a PDF that fails to parse at all) gets a clear
-        # user-facing error instead of a raw 500.
-        text, ocr_used = try_extract_text(file_path, ext)
+        # Extract text from the file. For scanned/image-only PDFs pypdf yields
+        # little or no text — the caller receives a clear error message.
+        text = try_extract_text(file_path, ext)
 
         # Chunk it
         chunks = [c for c in pdf_processor.chunk_text(text) if c.strip()]
@@ -129,7 +126,6 @@ async def upload_pdf(
             "filename": file.filename,
             "message": "File uploaded and processed successfully",
             "chunks_created": len(chunks),
-            "ocr_used": ocr_used,
             "document_id": document_id,
         }
     except HTTPException:
@@ -152,24 +148,19 @@ def extract_text(file_path: str, ext: str) -> str:
     return pdf_processor.extract_text_from_pdf(file_path)
 
 
-def try_extract_text(file_path: str, ext: str) -> tuple[str, bool]:
-    """Return (text, ocr_used).
+def try_extract_text(file_path: str, ext: str) -> str:
+    """Extract text from an uploaded file.
 
-    For PDFs, plain text extraction is tried first; if it yields too little
-    text (a scanned/image-based PDF) or throws, an OCR pass runs. Both failing
-    results in an empty string so the caller can report the graceful error."""
+    For .txt files the raw bytes are decoded. For PDFs the embedded text layer
+    is read via pypdf; scanned/image-only PDFs carry no text layer and so return
+    an empty string, which the caller reports with a clear "OCR not supported"
+    style error message."""
     if ext != ".pdf":
-        return extract_text(file_path, ext), False
-    text = ""
+        return extract_text(file_path, ext)
     try:
-        text = extract_text(file_path, ext) or ""
+        return extract_text(file_path, ext) or ""
     except Exception:
-        text = ""
-    if len(text.strip()) < TEXT_EXTRACTION_MIN_CHARS:
-        ocr_text = pdf_processor.extract_text_from_pdf_ocr(file_path)
-        if len(ocr_text.strip()) >= TEXT_EXTRACTION_MIN_CHARS:
-            return ocr_text, True
-    return text, False
+        return ""
 
 
 @router.get("/documents", dependencies=[Depends(require_admin)])

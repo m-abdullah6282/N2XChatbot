@@ -66,7 +66,7 @@ def can_create_agent(admin_id: int, role: str = "admin") -> bool:
     _sub, plan = _current_plan_and_subscription(admin_id)
     if not plan:
         return False
-    if plan.get("max_agents") is None:
+    if plan.get("unlimited_ai_agents") or plan.get("max_agents") is None:
         return True
     return len(list_agents(admin_id=admin_id)) < plan["max_agents"]
 
@@ -79,14 +79,38 @@ def enforce_agent_limit(admin_id: int, role: str = "admin") -> None:
     _sub, plan = _current_plan_and_subscription(admin_id)
     if not plan:
         raise SubscriptionError("No plan assigned.", code="no_plan")
-    max_agents = plan.get("max_agents")
-    if max_agents is None:
+    if plan.get("unlimited_ai_agents") or plan.get("max_agents") is None:
         return
+    max_agents = int(plan["max_agents"])
     if len(list_agents(admin_id=admin_id)) >= max_agents:
         raise SubscriptionError(
             f"Agent limit reached ({max_agents}). Upgrade your plan to add more agents.",
             code="agent_limit_reached",
         )
+
+
+def enforce_support_agent_limit(admin_id: int, role: str = "admin") -> None:
+    """Runtime enforcement for the Support Agent limit.
+
+    The Support Agent feature does NOT exist in this project yet (there is no
+    support_agents table or creation flow). The plan fields
+    UNLIMITED_SUPPORT_AGENTS / MAX_SUPPORT_AGENTS are stored and configurable by
+    the Super Admin, but there is no support-agent object to count. This function
+    is a documented placeholder: it currently allows the action ALWAYS, so that
+    when a real Support Agent feature is added, the enforcing call can be wired
+    in here without changing route logic. It never invented a fake support
+    system."""
+    if role == "super_admin":
+        return
+    _require_active_subscription(admin_id, role)
+    _sub, plan = _current_plan_and_subscription(admin_id)
+    if not plan:
+        raise SubscriptionError("No plan assigned.", code="no_plan")
+    if plan.get("unlimited_support_agents") or plan.get("max_support_agents") is None:
+        return
+    # When a real support-agent store exists, replace this with a count check:
+    #   if count_support_agents(admin_id) >= int(plan["max_support_agents"]): raise
+    return
 
 
 def can_upload_document(admin_id: int, role: str = "admin") -> bool:

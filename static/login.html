@@ -1,101 +1,150 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>N2X Admin Login</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-    <script>
-        tailwind.config = {
-            theme: {
-                extend: {
-                    fontFamily: { sans: ['Inter', 'Poppins', 'ui-sans-serif', 'system-ui', 'sans-serif'] },
-                    colors: { brand: '#00C2B8', brandDark: '#0BA39B', charcoal: '#1A1A1A', slate: '#64748B' },
-                },
-            },
-        };
-    </script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>N2X Admin Login</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --brand:#0d9488;--brand-light:#ccfbf1;--brand-dark:#0f766e;
+  --brand-50:#f0fdfa;--brand-100:#ccfbf1;--brand-500:#14b8a6;--brand-600:#0d9488;--brand-700:#0f766e;
+  --text:#0f172a;--text-secondary:#475569;--text-muted:#94a3b8;
+  --border:#e2e8f0;--surface:#fff;--danger:#ef4444;--danger-light:#fef2f2;
+}
+html{font-family:'Inter',system-ui,-apple-system,sans-serif;font-size:14px;-webkit-font-smoothing:antialiased}
+body{min-height:100vh;display:flex;color:var(--text)}
+
+/* Left branding panel */
+.login-hero{flex:1;background:linear-gradient(135deg,#0f172a 0%,#134e4a 50%,#0d9488 100%);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:48px;position:relative;overflow:hidden;color:#fff}
+.login-hero::before{content:'';position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.04) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.04) 1px,transparent 1px);background-size:48px 48px}
+.login-hero::after{content:'';position:absolute;top:-120px;right:-120px;width:400px;height:400px;border-radius:50%;background:rgba(20,184,166,.15);filter:blur(80px)}
+.hero-content{position:relative;z-index:1;text-align:center;max-width:360px}
+.hero-logo{width:72px;height:72px;border-radius:20px;background:rgba(255,255,255,.12);backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;margin:0 auto 28px;font-weight:800;font-size:22px;border:1px solid rgba(255,255,255,.15);box-shadow:0 8px 32px rgba(0,0,0,.2)}
+.hero-title{font-size:28px;font-weight:800;letter-spacing:-.03em;line-height:1.2;margin-bottom:12px}
+.hero-title span{color:#5eead4}
+.hero-subtitle{font-size:15px;color:rgba(255,255,255,.65);line-height:1.6}
+.hero-features{margin-top:40px;text-align:left;display:flex;flex-direction:column;gap:14px}
+.hero-feature{display:flex;align-items:center;gap:12px;font-size:13px;color:rgba(255,255,255,.7)}
+.hero-feature-icon{width:32px;height:32px;border-radius:8px;background:rgba(255,255,255,.1);display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.hero-feature-icon svg{width:16px;height:16px;stroke:#5eead4;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+
+/* Right form panel */
+.login-form-panel{flex:1;display:flex;align-items:center;justify-content:center;padding:48px;background:#f8fafc}
+.login-card{width:100%;max-width:400px}
+.login-header{margin-bottom:36px}
+.login-brand{display:flex;align-items:center;gap:10px;margin-bottom:28px}
+.login-brand-icon{width:40px;height:40px;border-radius:12px;background:linear-gradient(135deg,var(--brand),#06b6d4);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:13px;box-shadow:0 2px 8px rgba(13,148,136,.3)}
+.login-brand-text{font-size:18px;font-weight:700;color:var(--text);letter-spacing:-.02em}
+.login-brand-text span{color:var(--brand-600)}
+.login-title{font-size:24px;font-weight:800;color:var(--text);letter-spacing:-.02em;margin-bottom:6px}
+.login-subtitle{font-size:14px;color:var(--text-muted)}
+
+.form-group{margin-bottom:18px}
+.form-label{display:block;font-size:13px;font-weight:600;color:var(--text);margin-bottom:6px}
+.form-input{width:100%;padding:11px 14px;border:1.5px solid var(--border);border-radius:10px;font-size:14px;color:var(--text);background:var(--surface);outline:none;transition:all .15s;font-family:inherit}
+.form-input:focus{border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-100)}
+.form-input::placeholder{color:var(--text-muted)}
+
+.login-btn{width:100%;padding:12px;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;border:none;background:var(--brand);color:#fff;box-shadow:0 2px 8px rgba(13,148,136,.3);transition:all .15s;display:flex;align-items:center;justify-content:center;gap:8px;font-family:inherit}
+.login-btn:hover{background:var(--brand-dark);box-shadow:0 4px 16px rgba(13,148,136,.35);transform:translateY(-1px)}
+.login-btn:active{transform:translateY(0)}
+.login-btn:disabled{opacity:.6;cursor:not-allowed;transform:none}
+@keyframes spin{to{transform:rotate(360deg)}}
+.spinner{width:18px;height:18px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .6s linear infinite}
+
+.error-msg{margin-top:16px;padding:12px 16px;border-radius:10px;font-size:13px;display:none;align-items:center;gap:8px;background:var(--danger-light);color:#991b1b;border:1px solid #fecaca}
+.error-msg.show{display:flex}
+
+.login-footer{margin-top:32px;text-align:center}
+.login-footer a{font-size:13px;color:var(--text-muted);text-decoration:none;transition:color .15s;display:inline-flex;align-items:center;gap:4px}
+.login-footer a:hover{color:var(--brand-600)}
+.login-footer a svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+
+@media(max-width:768px){
+  body{flex-direction:column}
+  .login-hero{padding:32px 24px;min-height:auto}
+  .hero-features{display:none}
+  .login-form-panel{padding:32px 24px}
+}
+</style>
 </head>
-<body class="font-sans bg-gradient-to-br from-charcoal via-black to-teal-900 min-h-screen flex items-center justify-center px-4 py-10">
-    <!-- subtle grid + glow -->
-    <div class="fixed inset-0 opacity-[0.05] pointer-events-none"
-         style="background-image: linear-gradient(to right, #fff 1px, transparent 1px), linear-gradient(to bottom, #fff 1px, transparent 1px); background-size: 56px 56px;"></div>
-    <div class="fixed -top-24 -right-24 w-96 h-96 rounded-full bg-brand/20 blur-3xl pointer-events-none"></div>
-    <div class="fixed -bottom-24 -left-24 w-96 h-96 rounded-full bg-cyan-500/20 blur-3xl pointer-events-none"></div>
+<body>
 
-    <div class="relative w-full max-w-md bg-white rounded-2xl shadow-2xl shadow-black/30 p-8 sm:p-10">
-        <!-- Logo -->
-        <div class="flex items-center justify-center gap-3 mb-6">
-            <div class="w-11 h-11 relative flex items-center justify-center rounded-2xl bg-gradient-to-br from-brand to-cyan-500 text-white font-black text-sm shadow-lg shadow-cyan-500/30">
-                N2
-                <span class="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-gradient-to-tr from-teal-400 to-cyan-300 ring-2 ring-white"></span>
-            </div>
-            <span class="text-xl font-extrabold tracking-tight text-charcoal">n2x<span class="text-brand">System</span></span>
-        </div>
+<div class="login-hero">
+  <div class="hero-content">
+    <div class="hero-logo">N2</div>
+    <div class="hero-title">Welcome to <span>n2x</span>System</div>
+    <div class="hero-subtitle">AI-powered knowledge chatbot platform — manage agents, knowledge bases, and analytics from one dashboard.</div>
+    <div class="hero-features">
+      <div class="hero-feature">
+        <div class="hero-feature-icon"><svg viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg></div>
+        Multi-agent management
+      </div>
+      <div class="hero-feature">
+        <div class="hero-feature-icon"><svg viewBox="0 0 24 24"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></svg></div>
+        Knowledge base & document upload
+      </div>
+      <div class="hero-feature">
+        <div class="hero-feature-icon"><svg viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg></div>
+        Real-time analytics & insights
+      </div>
+    </div>
+  </div>
+</div>
 
-        <h1 class="text-2xl font-black text-charcoal text-center">Admin Panel</h1>
-        <p class="text-sm text-slate text-center mb-8">Aagay barhnay ke liye login karo</p>
-
-        <form id="loginForm">
-            <div class="mb-4">
-                <label for="username" class="block text-sm font-semibold text-charcoal/80 mb-2">Username</label>
-                <input id="username" type="text" autocomplete="username" required
-                       class="w-full border border-slate-300 rounded-xl px-4 py-3 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20 transition" />
-            </div>
-            <div class="mb-6">
-                <label for="password" class="block text-sm font-semibold text-charcoal/80 mb-2">Password</label>
-                <input id="password" type="password" autocomplete="current-password" required
-                       class="w-full border border-slate-300 rounded-xl px-4 py-3 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20 transition" />
-            </div>
-            <button id="loginBtn" type="submit"
-                    class="w-full bg-brand hover:bg-brandDark disabled:opacity-60 disabled:cursor-not-allowed text-white font-bold rounded-xl py-3 text-sm shadow-lg shadow-brand/30 transition-colors">
-                Login
-            </button>
-            <div id="msg" class="hidden mt-4 rounded-lg bg-red-50 text-red-700 text-sm px-4 py-3"></div>
-        </form>
-
-        <a class="block text-center mt-6 text-sm text-slate-500 hover:text-brand transition-colors" href="/">&larr; Waps site par</a>
+<div class="login-form-panel">
+  <div class="login-card">
+    <div class="login-header">
+      <div class="login-brand">
+        <div class="login-brand-icon">N2</div>
+        <div class="login-brand-text">n2x<span>System</span></div>
+      </div>
+      <div class="login-title">Admin Login</div>
+      <div class="login-subtitle">Aagay barhnay ke liye login karo</div>
     </div>
 
-    <script>
-        var form = document.getElementById("loginForm");
-        var msg = document.getElementById("msg");
+    <form id="loginForm">
+      <div class="form-group">
+        <label class="form-label" for="username">Username</label>
+        <input id="username" type="text" class="form-input" autocomplete="username" required placeholder="Enter your username" />
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="password">Password</label>
+        <input id="password" type="password" class="form-input" autocomplete="current-password" required placeholder="Enter your password" />
+      </div>
+      <button id="loginBtn" type="submit" class="login-btn">Login</button>
+      <div id="msg" class="error-msg"></div>
+    </form>
 
-        function showError(text) {
-            msg.textContent = text;
-            msg.classList.remove("hidden");
-        }
+    <div class="login-footer">
+      <a href="/"><svg viewBox="0 0 24 24"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg> Waps site par</a>
+    </div>
+  </div>
+</div>
 
-        form.addEventListener("submit", async function (e) {
-            e.preventDefault();
-            var username = document.getElementById("username").value.trim();
-            var password = document.getElementById("password").value;
-            if (!username || !password) {
-                showError("Username aur password dono likho.");
-                return;
-            }
-            msg.classList.add("hidden");
-            var btn = document.getElementById("loginBtn");
-            btn.disabled = true;
-            btn.textContent = "Logging in...";
-            try {
-                var res = await fetch("/admin/login", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ username: username, password: password }),
-                });
-                var data = await res.json();
-                if (!res.ok) throw new Error(data.detail || "Login failed");
-                window.location.href = "/admin";
-            } catch (err) {
-                showError(err.message);
-                btn.disabled = false;
-                btn.textContent = "Login";
-            }
-        });
-    </script>
+<script>
+var form = document.getElementById("loginForm");
+var msg = document.getElementById("msg");
+function showError(text) { msg.textContent = text; msg.classList.add("show"); }
+form.addEventListener("submit", async function (e) {
+  e.preventDefault();
+  var username = document.getElementById("username").value.trim();
+  var password = document.getElementById("password").value;
+  if (!username || !password) { showError("Username aur password dono likho."); return; }
+  msg.classList.remove("show");
+  var btn = document.getElementById("loginBtn");
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Logging in...';
+  try {
+    var res = await fetch("/admin/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: username, password: password }) });
+    var data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Login failed");
+    window.location.href = "/admin";
+  } catch (err) { showError(err.message); btn.disabled = false; btn.textContent = "Login"; }
+});
+</script>
 </body>
 </html>

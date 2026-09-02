@@ -1,7 +1,8 @@
-"""Re-index the N2X knowledge document(s) with section-aware chunks.
+"""Re-index agent-scoped N2X knowledge document(s) with section-aware chunks.
 
-Re-indexes both the shared copy (agent_id=None) and any agent-scoped copy
-found under ``uploaded_files/agent_<id>/``.
+Shared-scope uploads (agent_id=None) are no longer supported: each agent
+retrieves only its own documents, so only ``uploaded_files/agent_<id>/``
+copies are re-indexed here.
 
 Run from the repository root:
     .\venv\Scripts\python.exe scripts\reindex_n2x_knowledge.py
@@ -39,10 +40,6 @@ def _reindex(path: Path, agent_id: int | None) -> None:
 
 
 def main() -> None:
-    shared = Path("uploaded_files/n2x_knowledge.txt")
-    if shared.exists():
-        _reindex(shared, None)
-
     for agent_dir in Path("uploaded_files").glob("agent_*/"):
         agent_id = int(agent_dir.name.split("_", 1)[1])
         for path in agent_dir.glob("n2x_knowledge.txt"):
