@@ -11,14 +11,34 @@ from app.db import init_db, get_agent_by_slug
 from app.routes import upload, chat, admin
 from app.services.auth import COOKIE_NAME, is_authenticated
 
-PORTFOLIO_PATH = "uploaded_files/N2X-System-Portfolio.pdf"
+# ---------------------------------------------------------------------------
+# Filesystem layout (absolute, CWD-independent)
+#
+#   <repo>/
+#     backend/            <- BASE_DIR (parent of the app package)
+#       app/              <- this file lives in app/
+#       uploaded_files/
+#     frontend/           <- FRONTEND_DIR
+#       pages/            <- all served HTML
+#       css/
+#       js/               <- widget.js (served at /static/widget.js)
+# ---------------------------------------------------------------------------
+_APP_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.dirname(_APP_DIR)
+PROJECT_ROOT = os.path.dirname(BASE_DIR)
+FRONTEND_DIR = os.path.join(PROJECT_ROOT, "frontend")
+PAGES_DIR = os.path.join(FRONTEND_DIR, "pages")
+JS_DIR = os.path.join(FRONTEND_DIR, "js")
+UPLOADED_FILES_DIR = os.path.join(BASE_DIR, "uploaded_files")
+
+PORTFOLIO_PATH = os.path.join(UPLOADED_FILES_DIR, "N2X-System-Portfolio.pdf")
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 
-os.makedirs("uploaded_files", exist_ok=True)
+os.makedirs(UPLOADED_FILES_DIR, exist_ok=True)
 
 init_db()
 
@@ -35,7 +55,10 @@ app.include_router(upload.router)
 app.include_router(chat.router)
 app.include_router(admin.router)
 
-app.mount("/static", StaticFiles(directory="static"), name="static")
+# The public embed URL is https://<host>/static/widget.js — keep that path
+# stable for every site that already embeds the widget. widget.js now lives in
+# frontend/js/, so /static is mounted there.
+app.mount("/static", StaticFiles(directory=JS_DIR), name="static")
 
 
 @app.on_event("startup")
@@ -131,7 +154,7 @@ def _load_template(path: str) -> str | None:
         return None
 
 
-AGENT_CHAT_TEMPLATE = _load_template("static/agent_chat.html")
+AGENT_CHAT_TEMPLATE = _load_template(os.path.join(PAGES_DIR, "agent_chat.html"))
 
 
 @app.get("/chat/{slug}")
@@ -140,7 +163,9 @@ def agent_chat_page(slug: str):
     dropdown). Missing slugs get a friendly 404 page."""
     agent = get_agent_by_slug(slug.lower())
     if not agent or AGENT_CHAT_TEMPLATE is None:
-        return _no_cache_file("static/agent_404.html", status_code=404)
+        return _no_cache_file(
+            os.path.join(PAGES_DIR, "agent_404.html"), status_code=404
+        )
     payload = {
         "id": agent["id"],
         "name": agent["name"],
@@ -161,21 +186,21 @@ def agent_chat_page(slug: str):
 
 @app.get("/")
 def root():
-    return _no_cache_file("static/index.html")
+    return _no_cache_file(os.path.join(PAGES_DIR, "index.html"))
 
 
 @app.get("/admin")
 def admin_page(request: Request):
     if not is_authenticated(request.cookies.get(COOKIE_NAME)):
         return RedirectResponse(url="/login", status_code=302)
-    return _no_cache_file("static/admin.html")
+    return _no_cache_file(os.path.join(PAGES_DIR, "admin.html"))
 
 
 @app.get("/login")
 def login_page(request: Request):
     if is_authenticated(request.cookies.get(COOKIE_NAME)):
         return RedirectResponse(url="/admin", status_code=302)
-    return _no_cache_file("static/login.html")
+    return _no_cache_file(os.path.join(PAGES_DIR, "login.html"))
 
 
 @app.get("/portfolio")

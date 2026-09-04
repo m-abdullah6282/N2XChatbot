@@ -16,6 +16,7 @@
   var STYLE_ID = "n2x-widget-style";
   var root = document.createElement("div");
   root.id = "n2x-widget";
+  if (EMBEDDED) root.className = "embedded";
   root.innerHTML = "";
 
   function mount() {
@@ -37,7 +38,7 @@
     "#n2x-launcher { width: 60px; height: 60px; border-radius: 50%; border: none; cursor: pointer; background: var(--n2x-color); color: #fff; box-shadow: 0 4px 20px rgba(37, 99, 235, 0.35); display: flex; align-items: center; justify-content: center; transition: all 0.2s ease; position: relative; }" +
     "#n2x-launcher:hover { transform: scale(1.08); box-shadow: 0 6px 28px rgba(37, 99, 235, 0.45); }" +
     "#n2x-launcher::after { content: ''; position: absolute; inset: -4px; border-radius: 50%; border: 2px solid var(--n2x-color); opacity: 0; animation: n2x-pulse 2s ease-out infinite; }" +
-    "@keyframes n2x-pulse { 0% { opacity: 0.5; transform: scale(1); } 100% { opacity: 0; transform: scale(1.3); }" +
+    "@keyframes n2x-pulse { 0% { opacity: 0.5; transform: scale(1); } 100% { opacity: 0; transform: scale(1.3); } }" +
 
     /* Panel */
     "#n2x-panel { position: fixed; right: 96px; bottom: 24px; width: 380px; max-width: calc(100vw - 48px); height: 520px; max-height: calc(100dvh - 48px); background: #fff; border-radius: 16px; box-shadow: 0 12px 48px rgba(0, 0, 0, 0.18), 0 0 0 1px rgba(0, 0, 0, 0.04); display: flex; flex-direction: column; overflow: hidden; }" +

@@ -17,7 +17,12 @@ from app.db import (
 )
 
 router = APIRouter()
-UPLOAD_DIR = "uploaded_files"
+# Absolute path to <repo>/backend/uploaded_files so uploads land in the same
+# place no matter which directory the server process was started from.
+UPLOAD_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "uploaded_files",
+)
 ALLOWED_EXTENSIONS = (".pdf", ".txt")
 
 NO_TEXT_EXTRACTED_MESSAGE = (

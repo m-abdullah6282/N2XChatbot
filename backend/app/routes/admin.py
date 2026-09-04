@@ -82,7 +82,11 @@ from app.services.subscription_service import (
 from app.routes.upload import agent_upload_dir
 
 router = APIRouter()
-UPLOAD_DIR = "uploaded_files"
+# Absolute path to <repo>/backend/uploaded_files (CWD-independent).
+UPLOAD_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "uploaded_files",
+)
 ALLOWED_EXTENSIONS = (".pdf", ".txt")
 
 

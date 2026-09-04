@@ -994,7 +994,7 @@ def get_admin_activity_overview() -> list[dict]:
             for agent_id_row in conn.execute(
                 "SELECT id FROM agents WHERE owner_admin_id = ?", (admin_id,)
             ).fetchall():
-                agent_dir = os.path.join("uploaded_files", f"agent_{agent_id_row['id']}")
+                agent_dir = _get_agent_uploaded_files_dir(agent_id_row["id"])
                 if os.path.isdir(agent_dir):
                     doc_count += len([
                         f for f in os.listdir(agent_dir)
