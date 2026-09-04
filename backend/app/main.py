@@ -25,8 +25,9 @@ from app.services.auth import COOKIE_NAME, is_authenticated
 # ---------------------------------------------------------------------------
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR = os.path.dirname(_APP_DIR)
-PROJECT_ROOT = os.path.dirname(BASE_DIR)
-FRONTEND_DIR = os.path.join(PROJECT_ROOT, "frontend")
+# PROJECT_ROOT = os.path.dirname(BASE_DIR)
+# FRONTEND_DIR = os.path.join(PROJECT_ROOT, "frontend")
+FRONTEND_DIR = os.path.join(BASE_DIR, "frontend")
 PAGES_DIR = os.path.join(FRONTEND_DIR, "pages")
 JS_DIR = os.path.join(FRONTEND_DIR, "js")
 UPLOADED_FILES_DIR = os.path.join(BASE_DIR, "uploaded_files")
