@@ -11,22 +11,8 @@ from app.db import init_db, get_agent_by_slug
 from app.routes import upload, chat, admin
 from app.services.auth import COOKIE_NAME, is_authenticated
 
-# ---------------------------------------------------------------------------
-# Filesystem layout (absolute, CWD-independent)
-#
-#   <repo>/
-#     backend/            <- BASE_DIR (parent of the app package)
-#       app/              <- this file lives in app/
-#       uploaded_files/
-#     frontend/           <- FRONTEND_DIR
-#       pages/            <- all served HTML
-#       css/
-#       js/               <- widget.js (served at /static/widget.js)
-# ---------------------------------------------------------------------------
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR = os.path.dirname(_APP_DIR)
-# PROJECT_ROOT = os.path.dirname(BASE_DIR)
-# FRONTEND_DIR = os.path.join(PROJECT_ROOT, "frontend")
 FRONTEND_DIR = os.path.join(BASE_DIR, "frontend")
 PAGES_DIR = os.path.join(FRONTEND_DIR, "pages")
 JS_DIR = os.path.join(FRONTEND_DIR, "js")
@@ -56,37 +42,18 @@ app.include_router(upload.router)
 app.include_router(chat.router)
 app.include_router(admin.router)
 
-# The public embed URL is https://<host>/static/widget.js — keep that path
-# stable for every site that already embeds the widget. widget.js now lives in
-# frontend/js/, so /static is mounted there.
 app.mount("/static", StaticFiles(directory=JS_DIR), name="static")
 
 
 @app.on_event("startup")
 def _preload_models():
-    """Pre-load the embedding model at startup so the first /chat request is
-    not slow (a slow first embed can make the frontend time out and show the
-    "server se connect nahi ho paya" network error)."""
-    try:
-        from app.services.embeddings import _get_model
-
-        _get_model()
-        logging.getLogger(__name__).info("Embedding model preloaded")
-    except Exception:
-        logging.getLogger(__name__).exception(
-            "Embedding model failed to preload; will retry lazily on first request"
-        )
-
-    # Background thread: reset exhausted Groq API keys every 24 hours so they
-    # become usable again without requiring a server restart.
     _start_key_reset_timer()
 
 
-_KEY_RESET_INTERVAL = 24 * 60 * 60  # 24 hours in seconds
+_KEY_RESET_INTERVAL = 24 * 60 * 60
 
 
 def _start_key_reset_timer():
-    """Schedule a periodic reset of exhausted Groq API keys."""
     from app.services.llm import _reset_exhausted_keys
 
     def _reset_loop():
@@ -106,12 +73,6 @@ def _start_key_reset_timer():
 
 @app.exception_handler(Exception)
 async def _global_exception_handler(request: Request, exc: Exception):
-    """Never let an unhandled exception escape as a non-JSON response.
-
-    The chat widget only does ``res.json()``; any HTML error page (500/503
-    from a crashing model or an upstream outage) makes ``json()`` throw and
-    the UI shows a misleading connection error while the server actually
-    responded. Always answer with structured JSON instead."""
     logging.getLogger(__name__).exception(
         "Unhandled exception on %s %s", request.method, request.url.path
     )
@@ -160,8 +121,6 @@ AGENT_CHAT_TEMPLATE = _load_template(os.path.join(PAGES_DIR, "agent_chat.html"))
 
 @app.get("/chat/{slug}")
 def agent_chat_page(slug: str):
-    """Standalone full-page chat for one agent, locked to that agent (no
-    dropdown). Missing slugs get a friendly 404 page."""
     agent = get_agent_by_slug(slug.lower())
     if not agent or AGENT_CHAT_TEMPLATE is None:
         return _no_cache_file(
