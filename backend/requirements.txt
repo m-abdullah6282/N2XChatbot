@@ -8,4 +8,4 @@ groq==0.13.0
 python-dotenv==1.0.1
 pydantic==2.9.2
 --extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.1.0+cpu
+torch==2.3.0+cpu
