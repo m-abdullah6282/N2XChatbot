@@ -34,17 +34,14 @@
     "#n2x-widget * { box-sizing: border-box; margin: 0; padding: 0; }" +
     "#n2x-widget { position: fixed; right: 24px; bottom: 24px; z-index: 999999; font-size: 14px; font-family: 'Inter', system-ui, -apple-system, sans-serif; --n2x-color: #2563EB; --n2x-color-dark: #1d4ed8; --n2x-color-light: #eff6ff; }" +
 
-    /* Launcher */
     "#n2x-launcher { width: 60px; height: 60px; border-radius: 50%; border: none; cursor: pointer; background: var(--n2x-color); color: #fff; box-shadow: 0 4px 20px rgba(37, 99, 235, 0.35); display: flex; align-items: center; justify-content: center; transition: all 0.2s ease; position: relative; }" +
     "#n2x-launcher:hover { transform: scale(1.08); box-shadow: 0 6px 28px rgba(37, 99, 235, 0.45); }" +
     "#n2x-launcher::after { content: ''; position: absolute; inset: -4px; border-radius: 50%; border: 2px solid var(--n2x-color); opacity: 0; animation: n2x-pulse 2s ease-out infinite; }" +
     "@keyframes n2x-pulse { 0% { opacity: 0.5; transform: scale(1); } 100% { opacity: 0; transform: scale(1.3); } }" +
 
-    /* Panel */
-    "#n2x-panel { position: fixed; right: 96px; bottom: 24px; width: 380px; max-width: calc(100vw - 48px); height: 520px; max-height: calc(100dvh - 48px); background: #fff; border-radius: 16px; box-shadow: 0 12px 48px rgba(0, 0, 0, 0.18), 0 0 0 1px rgba(0, 0, 0, 0.04); display: flex; flex-direction: column; overflow: hidden; }" +
+    "#n2x-panel { position: fixed; right: 96px; bottom: 24px; width: 380px; max-width: calc(100vw - 48px); height: 520px; max-height: calc(100dvh - 48px); background: #fff; border-radius: 16px; box-shadow: 0 12px 48px rgba(0, 0, 0, 0.18), 0 0 0 1px rgba(0, 0, 0, 0.04); display: flex; flex-direction: column; overflow: hidden; overscroll-behavior: contain; }" +
     "#n2x-panel.hidden { display: none; }" +
 
-    /* Header */
     "#n2x-header { background: var(--n2x-color); color: #fff; padding: 16px 18px; display: flex; align-items: center; gap: 12px; flex-shrink: 0; }" +
     "#n2x-header .dot { width: 8px; height: 8px; border-radius: 50%; background: #34d399; flex-shrink: 0; box-shadow: 0 0 6px rgba(52, 211, 153, 0.5); }" +
     "#n2x-agent-select { flex: 1; background: transparent; color: #fff; border: none; font-size: 14px; font-weight: 600; outline: none; cursor: pointer; font-family: inherit; }" +
@@ -53,8 +50,7 @@
     "#n2x-close:hover { background: rgba(255,255,255,0.25); }" +
     "#n2x-close svg { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }" +
 
-    /* Messages */
-    "#n2x-messages { flex: 1; overflow-y: auto; padding: 16px; background: #f8fafc; display: flex; flex-direction: column; gap: 8px; }" +
+    "#n2x-messages { flex: 1; overflow-y: auto; padding: 16px; background: #f8fafc; display: flex; flex-direction: column; gap: 8px; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }" +
     "#n2x-messages .msg { max-width: 82%; padding: 10px 14px; border-radius: 14px; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word; font-size: 13px; animation: n2x-msg-in 0.2s ease-out; }" +
     "@keyframes n2x-msg-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }" +
     "#n2x-messages .msg.user { align-self: flex-end; background: var(--n2x-color); color: #fff; border-bottom-right-radius: 4px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }" +
@@ -66,7 +62,6 @@
     "#n2x-messages .msg.typing .dots span:nth-child(3) { animation-delay: 0.3s; }" +
     "@keyframes n2x-dot { 0%, 60%, 100% { transform: translateY(0); } 30% { transform: translateY(-4px); } }" +
 
-    /* Input */
     "#n2x-input-row { display: flex; gap: 8px; padding: 14px 16px; border-top: 1px solid #e2e8f0; background: #fff; flex-shrink: 0; }" +
     "#n2x-input { flex: 1; border: 1.5px solid #e2e8f0; border-radius: 10px; padding: 10px 14px; font-size: 13px; outline: none; font-family: inherit; transition: border-color 0.15s; }" +
     "#n2x-input:focus { border-color: var(--n2x-color); box-shadow: 0 0 0 3px var(--n2x-color-light); }" +
@@ -76,17 +71,17 @@
     "#n2x-send:active { transform: scale(0.97); }" +
     "#n2x-send svg { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }" +
 
-    /* Locked label */
     "#n2x-widget .locked-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 14px; font-weight: 600; }" +
 
-    /* Embedded mode */
     "#n2x-widget.embedded { position: static; inset: auto; width: 100%; height: 100%; }" +
     "#n2x-widget.embedded #n2x-launcher, #n2x-widget.embedded #n2x-close { display: none; }" +
     "#n2x-widget.embedded #n2x-panel { position: static; right: auto; bottom: auto; width: 100%; height: 100%; max-width: none; max-height: none; border: none; border-radius: 0; box-shadow: none; }" +
     "#n2x-widget.embedded #n2x-panel.hidden { display: flex; }" +
 
-    /* Mobile */
-    "@media (max-width: 480px) { #n2x-widget { right: 16px; bottom: 16px; } #n2x-panel { right: 16px; bottom: 16px; width: calc(100vw - 32px); height: calc(100dvh - 80px); border-radius: 16px; } }";
+    "@media (max-width: 480px) {" +
+    "  #n2x-widget { right: 16px; bottom: 16px; }" +
+    "  #n2x-panel { position: fixed; right: 0; bottom: 0; left: 0; top: 0; width: 100%; height: 100%; max-width: 100vw; max-height: 100dvh; border-radius: 0; }" +
+    "}";
 
   document.head.appendChild(style);
 
@@ -221,8 +216,18 @@
   loadAgents();
   if (EMBEDDED) startPolling();
 
-  function openPanel() { panel.classList.remove("hidden"); inputEl.focus(); messagesEl.scrollTop = messagesEl.scrollHeight; startPolling(); }
-  function closePanel() { panel.classList.add("hidden"); stopPolling(); }
+  function openPanel() {
+    panel.classList.remove("hidden");
+    inputEl.focus();
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    startPolling();
+    document.body.style.overflow = "hidden";
+  }
+  function closePanel() {
+    panel.classList.add("hidden");
+    stopPolling();
+    document.body.style.overflow = "";
+  }
 
   launcher.addEventListener("click", openPanel);
   closeBtn.addEventListener("click", closePanel);
