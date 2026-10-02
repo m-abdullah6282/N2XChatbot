@@ -6,8 +6,10 @@ qdrant-client==1.12.0
 groq==0.13.0
 python-dotenv==1.0.1
 pydantic==2.9.2
-requests==2.31.0
+# ONNX embeddings (all-MiniLM-L6-v2). `transformers`/`torch` are NOT needed:
+# the fast `tokenizers` library + huggingface-hub (model download) are enough
+# and keep RAM well inside Render's 512MB free tier.
 onnxruntime==1.17.0
-transformers==4.38.0
 tokenizers==0.15.0
+huggingface-hub==0.24.7
 numpy==1.26.0

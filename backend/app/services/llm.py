@@ -2,7 +2,7 @@ import time
 import logging
 import threading
 from groq import Groq, RateLimitError, APIConnectionError, APITimeoutError, APIStatusError
-from app.config import GROQ_API_KEYS
+from app.config import GROQ_API_KEYS, GROQ_MODEL
 from app.db import DEFAULT_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -26,7 +26,6 @@ def _get_next_client() -> Groq | None:
     if not _clients:
         return None
     with _lock:
-        start = _current_idx
         for _ in range(len(_clients)):
             if not _key_exhausted[_current_idx]:
                 client = _clients[_current_idx]
@@ -111,11 +110,15 @@ def truncate_chunks(chunks: list[dict], max_chars: int = MAX_CONTEXT_CHARS) -> l
 def _is_daily_limit(exc: RateLimitError) -> bool:
     """Daily (TPD) quota exhaustion cannot be fixed by short backoff, so retries
     are pointless. Per-minute (TPM) limits reset in seconds and are retryable."""
-    return "tokens per day" in str(exc)
+    message = str(exc).lower()
+    return "tokens per day" in message or "requests per day" in message
 
 
-def _create_completion(prompt: str) -> str:
+def _create_completion(system_prompt: str, user_prompt: str) -> str:
     last_error: Exception | None = None
+
+    if not _clients:
+        raise RuntimeError("GROQ_API_KEY is not configured on the server.")
 
     # Try each available key at most once for daily-limit errors
     for key_attempt in range(len(_clients)):
@@ -126,12 +129,17 @@ def _create_completion(prompt: str) -> str:
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 response = client.chat.completions.create(
-                    model="groq/compound-mini",
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.7,
-                    max_tokens=250,
+                    model=GROQ_MODEL,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    # Low temperature: answers must stay grounded in the context.
+                    temperature=0.3,
+                    # Room for "list all projects" style answers.
+                    max_tokens=600,
                 )
-                return response.choices[0].message.content
+                return (response.choices[0].message.content or "").strip()
             except RateLimitError as exc:
                 last_error = exc
                 if _is_daily_limit(exc):
@@ -191,21 +199,17 @@ def generate_answer(question: str, context: str, system_prompt: str = DEFAULT_SY
             MAX_SYSTEM_PROMPT_CHARS,
         )
 
-    prompt = f"""{system_prompt}
-
-Context:
+    user_prompt = f"""Context:
 {context}
 
 Question: {question}
 
 Answer:"""
 
-    # Safety: hard-cap the entire prompt well below Groq's entity-size limit.
+    # Safety: hard-cap the user prompt well below Groq's entity-size limit.
     max_total = 20_000
-    if len(prompt) > max_total:
-        prompt = prompt[:max_total]
-        logger.warning("Full prompt truncated to %d chars.", max_total)
+    if len(user_prompt) > max_total:
+        user_prompt = user_prompt[:max_total]
+        logger.warning("User prompt truncated to %d chars.", max_total)
 
-    response = _create_completion(prompt)
-
-    return response
+    return _create_completion(system_prompt, user_prompt)

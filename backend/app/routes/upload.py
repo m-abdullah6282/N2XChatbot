@@ -1,6 +1,7 @@
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends, Request
 import shutil
 import os
+import logging
 
 from app.services import pdf_processor
 from app.services.embeddings import generate_embeddings_batch
@@ -17,6 +18,7 @@ from app.db import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 # Absolute path to <repo>/backend/uploaded_files so uploads land in the same
 # place no matter which directory the server process was started from.
 UPLOAD_DIR = os.path.join(
@@ -37,13 +39,15 @@ def agent_upload_dir(agent_id: int) -> str:
 
 
 @router.post("/upload", dependencies=[Depends(require_admin)])
-async def upload_pdf(
+def upload_pdf(
     request: Request,
     file: UploadFile = File(...),
     agent_id: int | None = Form(None),
 ):
-    ext = os.path.splitext(file.filename)[1].lower()
-    if ext not in ALLOWED_EXTENSIONS:
+    # Strip any directory part: "../../x.txt" must not escape the upload dir.
+    filename = os.path.basename((file.filename or "").replace("\\", "/"))
+    ext = os.path.splitext(filename)[1].lower()
+    if not filename or ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail="Only PDF and TXT files are allowed")
 
     admin_id, role = get_current_admin(request)
@@ -73,21 +77,21 @@ async def upload_pdf(
     os.makedirs(upload_dir, exist_ok=True)
 
     file_path_in_scope = (
-        os.path.join(agent_upload_dir(agent_id), file.filename)
+        os.path.join(agent_upload_dir(agent_id), filename)
         if agent_id is not None
-        else file.filename
+        else filename
     )
-    file_path = os.path.join(upload_dir, file.filename)
+    file_path = os.path.join(upload_dir, filename)
 
     # Create a document record first (status = processing). On any failure we
     # mark it failed so we never falsely report 'ready'. Re-uploading the same
     # filename replaces the previous record (mirrors the Qdrant replace below).
-    delete_document_record_by_scope(agent_id, file.filename)
+    delete_document_record_by_scope(agent_id, filename)
     document_id = create_document(
         agent_id,
         owner_admin_id,
-        file.filename,
-        file.filename,
+        filename,
+        filename,
         file_path=file_path_in_scope,
         file_size=0,
     )
@@ -114,11 +118,11 @@ async def upload_pdf(
         # Store in Qdrant, replacing any previously stored points for this file.
         # Keeps existing agent_id isolation and shared-knowledge behaviour.
         create_collection_if_not_exists()
-        delete_points_by_filename(file.filename, agent_id)
+        delete_points_by_filename(filename, agent_id)
         store_chunks(
             chunks,
             embeddings,
-            file.filename,
+            filename,
             agent_id,
             document_id=document_id,
             owner_admin_id=owner_admin_id,
@@ -128,7 +132,7 @@ async def upload_pdf(
         update_document_status(document_id, "ready", chunks_count=len(chunks))
 
         return {
-            "filename": file.filename,
+            "filename": filename,
             "message": "File uploaded and processed successfully",
             "chunks_created": len(chunks),
             "document_id": document_id,
@@ -136,10 +140,17 @@ async def upload_pdf(
     except HTTPException:
         raise
     except Exception as exc:
-        # A processing failure must never falsely show 'ready'. Keep the error
-        # message safe (no internal exception details exposed to the client).
-        update_document_status(document_id, "failed")
-        raise HTTPException(status_code=500, detail="File processing failed")
+        # A processing failure must never falsely show 'ready'. The real cause
+        # goes to the server log + the document row; the client gets a safe
+        # message (no internal exception details exposed).
+        logger.exception("Upload processing failed for %s", filename)
+        update_document_status(
+            document_id, "failed", error_message=f"{type(exc).__name__}: {str(exc)[:200]}"
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="File processing failed (embedding or knowledge-store error). Check the server logs.",
+        )
 
 
 def extract_text(file_path: str, ext: str) -> str:

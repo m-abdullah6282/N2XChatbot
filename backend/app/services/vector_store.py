@@ -6,12 +6,21 @@ from qdrant_client.models import (
 import uuid
 import logging
 import re
+from qdrant_client.http.exceptions import UnexpectedResponse
 from app.config import QDRANT_URL, QDRANT_API_KEY
- 
-client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
+
 logger = logging.getLogger(__name__)
 
+if not QDRANT_URL:
+    logger.error("QDRANT_URL is not set - knowledge retrieval will be unavailable.")
+
+# An explicit timeout: the default is short and fails large upserts, while an
+# unreachable cluster must still fail in bounded time.
+client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, timeout=30)
+
 COLLECTION_NAME = "knowledge_base"
+EMBEDDING_DIM = 384
+UPSERT_BATCH_SIZE = 64
 
 # Contact/address signals. Queries containing these words always force the
 # agent's CONTACT-typed chunks into the retrieval context regardless of the
@@ -215,6 +224,14 @@ def _contact_score(text: str) -> int:
     return sum(1 for word in _CONTACT_SIGNAL_WORDS if word in lower)
 
 
+def _is_missing_collection(exc: Exception) -> bool:
+    """True when an error just means the collection does not exist (yet)."""
+    if isinstance(exc, UnexpectedResponse) and exc.status_code == 404:
+        return True
+    text = str(exc).lower()
+    return "not found" in text and "collection" in text
+
+
 def create_collection_if_not_exists():
     collections = client.get_collections().collections
     collection_names = [c.name for c in collections]
@@ -222,19 +239,60 @@ def create_collection_if_not_exists():
     if COLLECTION_NAME not in collection_names:
         client.create_collection(
             collection_name=COLLECTION_NAME,
-            vectors_config=VectorParams(size=384, distance=Distance.COSINE)
+            vectors_config=VectorParams(size=EMBEDDING_DIM, distance=Distance.COSINE)
         )
+    else:
+        _check_vector_size()
 
     ensure_filename_index()
     ensure_agent_index()
     ensure_contact_index()
 
+
+def _check_vector_size():
+    """Log loudly when an existing collection was created with a different
+    vector size than the 384-dim MiniLM model (every upsert/search would then
+    fail with a 400 and look like 'knowledge service unavailable')."""
+    try:
+        vectors = client.get_collection(COLLECTION_NAME).config.params.vectors
+        size = getattr(vectors, "size", None)
+        if size is not None and size != EMBEDDING_DIM:
+            logger.error(
+                "Qdrant collection '%s' has vector size %s but the embedding "
+                "model produces %d. Delete the collection and re-upload docs.",
+                COLLECTION_NAME, size, EMBEDDING_DIM,
+            )
+    except Exception:
+        logger.exception("Could not verify Qdrant collection vector size")
+
+
 def ensure_filename_index():
-    client.create_payload_index(
-        collection_name=COLLECTION_NAME,
-        field_name="filename",
-        field_schema=PayloadSchemaType.KEYWORD,
-    )
+    try:
+        client.create_payload_index(
+            collection_name=COLLECTION_NAME,
+            field_name="filename",
+            field_schema=PayloadSchemaType.KEYWORD,
+        )
+    except Exception:
+        pass
+
+
+def get_status() -> dict:
+    """Connectivity/collection diagnostics for the admin diagnostics endpoint."""
+    status: dict = {"configured": bool(QDRANT_URL and QDRANT_API_KEY)}
+    try:
+        names = [c.name for c in client.get_collections().collections]
+        status["reachable"] = True
+        status["collection_exists"] = COLLECTION_NAME in names
+        if COLLECTION_NAME in names:
+            info = client.get_collection(COLLECTION_NAME)
+            status["points"] = info.points_count
+            vectors = info.config.params.vectors
+            status["vector_size"] = getattr(vectors, "size", None)
+    except Exception as exc:
+        status["reachable"] = False
+        status["error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+    return status
 
 def ensure_agent_index():
     try:
@@ -292,7 +350,11 @@ def store_chunks(
         )
         points.append(point)
 
-    client.upsert(collection_name=COLLECTION_NAME, points=points)
+    for start in range(0, len(points), UPSERT_BATCH_SIZE):
+        client.upsert(
+            collection_name=COLLECTION_NAME,
+            points=points[start : start + UPSERT_BATCH_SIZE],
+        )
 
 def _agent_conditions(filename: str, agent_id: int | None) -> list:
     conditions = [FieldCondition(key="filename", match=MatchValue(value=filename))]
@@ -305,24 +367,33 @@ def _agent_conditions(filename: str, agent_id: int | None) -> list:
     return conditions
 
 def delete_points_by_filename(filename: str, agent_id: int | None = None):
-    client.delete(
-        collection_name=COLLECTION_NAME,
-        points_selector=FilterSelector(
-            filter=Filter(
-                must=_agent_conditions(filename, agent_id)
-            )
-        ),
-    )
+    try:
+        client.delete(
+            collection_name=COLLECTION_NAME,
+            points_selector=FilterSelector(
+                filter=Filter(
+                    must=_agent_conditions(filename, agent_id)
+                )
+            ),
+        )
+    except Exception as exc:
+        # No collection means there is nothing to delete.
+        if not _is_missing_collection(exc):
+            raise
 
 def delete_points_by_agent(agent_id: int):
-    client.delete(
-        collection_name=COLLECTION_NAME,
-        points_selector=FilterSelector(
-            filter=Filter(
-                must=[FieldCondition(key="agent_id", match=MatchValue(value=agent_id))]
-            )
-        ),
-    )
+    try:
+        client.delete(
+            collection_name=COLLECTION_NAME,
+            points_selector=FilterSelector(
+                filter=Filter(
+                    must=[FieldCondition(key="agent_id", match=MatchValue(value=agent_id))]
+                )
+            ),
+        )
+    except Exception as exc:
+        if not _is_missing_collection(exc):
+            raise
 
 def _scope_filter(agent_id: int | None) -> Filter:
     """Retrieval scope is STRICTLY per-agent: an agent only ever sees vectors
@@ -460,14 +531,27 @@ def search_similar_chunks(query_embedding: list[float], top_k: int = 3, agent_id
         query_text = normalize_query(query_text)
     query_filter = _scope_filter(agent_id)
     try:
-        results = client.search(
+        results = client.query_points(
             collection_name=COLLECTION_NAME,
-            query_vector=query_embedding,
+            query=query_embedding,
             limit=max(top_k, 12),
             query_filter=query_filter,
             score_threshold=score_threshold,
-        )
-    except Exception:
+            with_payload=True,
+        ).points
+    except Exception as exc:
+        if _is_missing_collection(exc):
+            # Collection does not exist yet (nothing was ever uploaded, or the
+            # cluster was recreated). Qdrant IS reachable - there is simply no
+            # knowledge, so answer with the normal "not found" fallback rather
+            # than claiming the service is down.
+            logger.warning("Qdrant collection '%s' not found; creating it.", COLLECTION_NAME)
+            try:
+                create_collection_if_not_exists()
+            except Exception:
+                logger.exception("Could not create the Qdrant collection")
+                return [], False
+            return [], True
         logger.exception("Qdrant search failed; knowledge retrieval is unavailable")
         return [], False
 

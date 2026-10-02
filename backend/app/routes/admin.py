@@ -158,36 +158,29 @@ def check_auth(request: Request):
     }
 
 
-@router.get("/documents", dependencies=[Depends(require_admin)])
-def list_documents(request: Request, agent_id: int | None = None):
-    admin_id, role = get_current_admin(request)
-    ensure_agent_access(agent_id, admin_id, role)
-    base_dir = agent_upload_dir(agent_id) if agent_id is not None else UPLOAD_DIR
-    if not os.path.isdir(base_dir):
-        return []
-    files = []
-    for name in os.listdir(base_dir):
-        path = os.path.join(base_dir, name)
-        if os.path.isfile(path) and name.lower().endswith(ALLOWED_EXTENSIONS):
-            files.append({"filename": name, "size": os.path.getsize(path)})
-    return files
+# NOTE: /documents (list/delete) lives in routes/upload.py. A duplicate copy
+# used to be registered here too, but the upload router is included first so
+# it was dead code - and it skipped the documents-table cleanup.
 
 
-@router.delete("/documents/{filename}", dependencies=[Depends(require_admin)])
-def delete_document(filename: str, request: Request, agent_id: int | None = None):
-    if not _safe_filename(filename):
-        raise HTTPException(status_code=400, detail="Invalid filename")
+@router.get("/admin/diagnostics", dependencies=[Depends(require_super_admin)])
+def diagnostics():
+    """Super-admin health check of every dependency the chat pipeline needs, so
+    'knowledge service unavailable' can be traced to its real cause (Qdrant
+    suspended/unreachable, model download failed, missing Groq key...)."""
+    from app.config import GROQ_API_KEYS, GROQ_MODEL
+    from app.services import embeddings, vector_store
+    from app.services.llm import get_key_status
 
-    admin_id, role = get_current_admin(request)
-    ensure_agent_access(agent_id, admin_id, role)
-
-    base_dir = agent_upload_dir(agent_id) if agent_id is not None else UPLOAD_DIR
-    path = os.path.join(base_dir, filename)
-    if os.path.exists(path):
-        os.remove(path)
-
-    delete_points_by_filename(filename, agent_id)
-    return {"filename": filename, "message": "Document deleted"}
+    result: dict = {"groq": {"model": GROQ_MODEL, **get_key_status()}}
+    try:
+        vec = embeddings.generate_embedding("health check")
+        result["embeddings"] = {"ok": True, "dimension": len(vec)}
+    except Exception as exc:
+        result["embeddings"] = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:200]}"}
+    result["qdrant"] = vector_store.get_status()
+    result["groq"]["configured"] = bool(GROQ_API_KEYS)
+    return result
 
 
 @router.get("/conversations", dependencies=[Depends(require_admin)])
@@ -232,20 +225,35 @@ def handoffs(request: Request):
     return get_pending_handoffs(admin_id, role)
 
 
+def _ensure_handoff_access(handoff: dict | None, admin_id: int | None, role: str | None) -> None:
+    """A normal admin may only act on handoffs of agents they own (or on
+    unassigned handoffs); super admins may act on any."""
+    if handoff is None:
+        raise HTTPException(status_code=404, detail="Handoff not found")
+    if role == "super_admin" or handoff.get("agent_id") is None:
+        return
+    agent = get_agent(handoff["agent_id"])
+    if not agent or agent.get("owner_admin_id") != admin_id:
+        raise HTTPException(status_code=403, detail="You don't have access to this conversation")
+
+
 @router.post("/admin/handoffs/{session_id}/reply", dependencies=[Depends(require_admin)])
-def reply_to_handoff(session_id: str, req: HandoffReply):
+def reply_to_handoff(session_id: str, req: HandoffReply, request: Request):
     message = req.message.strip()
     if not message:
         raise HTTPException(status_code=400, detail="Message cannot be empty")
+    admin_id, role = get_current_admin(request)
     handoff = get_handoff(session_id)
-    agent_id = handoff["agent_id"] if handoff else None
-    save_message(session_id, "assistant", message, was_fallback=0, agent_id=agent_id)
+    _ensure_handoff_access(handoff, admin_id, role)
+    save_message(session_id, "assistant", message, was_fallback=0, agent_id=handoff["agent_id"])
     resolve_handoff(session_id)
     return {"message": "Reply sent"}
 
 
 @router.post("/admin/handoffs/{session_id}/resolve", dependencies=[Depends(require_admin)])
-def resolve_existing_handoff(session_id: str):
+def resolve_existing_handoff(session_id: str, request: Request):
+    admin_id, role = get_current_admin(request)
+    _ensure_handoff_access(get_handoff(session_id), admin_id, role)
     if not resolve_handoff(session_id):
         raise HTTPException(status_code=404, detail="Pending handoff not found")
     return {"message": "Handoff resolved"}

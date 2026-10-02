@@ -15,6 +15,10 @@ logging.getLogger(__name__).info(
     "Loaded %d Groq API key(s) for rotation.", len(GROQ_API_KEYS)
 )
 
+# Plain chat model: "groq/compound-*" are agentic systems with built-in web
+# search, which breaks "answer only from the knowledge base" and adds latency.
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+
 QDRANT_URL = os.getenv("QDRANT_URL")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")

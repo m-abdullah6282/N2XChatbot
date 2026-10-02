@@ -49,6 +49,36 @@ app.mount("/static", StaticFiles(directory=JS_DIR), name="static")
 def _preload_models():
     _start_key_reset_timer()
 
+    from app.config import ADMIN_PASSWORD
+
+    if ADMIN_PASSWORD == "change_this_password":
+        logging.getLogger(__name__).warning(
+            "ADMIN_PASSWORD is still the default 'change_this_password' - "
+            "set ADMIN_USERNAME / ADMIN_PASSWORD in the environment."
+        )
+
+    # Warm up in the background so the port binds immediately (Render health
+    # check) while the ~90MB model download and Qdrant setup happen off-thread.
+    # Without this the FIRST chat paid the download cost and could time out.
+    threading.Thread(target=_warm_up, daemon=True, name="warm-up").start()
+
+
+def _warm_up():
+    log = logging.getLogger(__name__)
+    try:
+        from app.services import embeddings
+
+        embeddings.preload()
+    except Exception:
+        log.exception("Embedding model preload failed (will retry on first chat)")
+    try:
+        from app.services.vector_store import create_collection_if_not_exists
+
+        create_collection_if_not_exists()
+        log.info("Qdrant collection ready.")
+    except Exception:
+        log.exception("Qdrant is unreachable at startup - check QDRANT_URL / API key / cluster status")
+
 
 _KEY_RESET_INTERVAL = 24 * 60 * 60
 
@@ -133,15 +163,24 @@ def agent_chat_page(slug: str):
         "slug": agent["slug"],
         "primary_color": agent.get("primary_color") or "#2563EB",
     }
+    # Escape "<" so an agent name/greeting containing "</script>" cannot break
+    # out of the inline <script> block (stored XSS).
+    safe_json = json.dumps(payload).replace("<", "\\u003c")
     html = (
         AGENT_CHAT_TEMPLATE
         .replace("__AGENT_NAME__", _html_escape(agent["name"]))
-        .replace("__AGENT_JSON__", json.dumps(payload))
+        .replace("__AGENT_JSON__", safe_json)
     )
     return HTMLResponse(html, headers={
         "Cache-Control": "no-store",
         "Pragma": "no-cache",
     })
+
+
+@app.get("/healthz")
+def healthz():
+    """Cheap liveness probe for Render's health check (no external calls)."""
+    return {"status": "ok"}
 
 
 @app.get("/")

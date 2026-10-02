@@ -7,11 +7,19 @@
   var LOCKED_AGENT =
     window.N2X_CHAT_AGENT && typeof window.N2X_CHAT_AGENT.id === "number" ? window.N2X_CHAT_AGENT : null;
 
-  var sessionId = localStorage.getItem("n2x_session_id");
+  // localStorage can throw (private mode, blocked cookies, sandboxed iframes);
+  // the widget must keep working without it.
+  function lsGet(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
+  function lsSet(key, value) { try { localStorage.setItem(key, value); } catch (e) {} }
+
+  var sessionId = lsGet("n2x_session_id");
   if (!sessionId) {
     sessionId = "session-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
-    localStorage.setItem("n2x_session_id", sessionId);
+    lsSet("n2x_session_id", sessionId);
   }
+
+  var MOBILE_QUERY = "(max-width: 480px)";
+  function isMobile() { return !!(window.matchMedia && window.matchMedia(MOBILE_QUERY).matches); }
 
   var STYLE_ID = "n2x-widget-style";
   var root = document.createElement("div");
@@ -50,7 +58,7 @@
     "#n2x-close:hover { background: rgba(255,255,255,0.25); }" +
     "#n2x-close svg { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }" +
 
-    "#n2x-messages { flex: 1; overflow-y: auto; padding: 16px; background: #f8fafc; display: flex; flex-direction: column; gap: 8px; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }" +
+    "#n2x-messages { flex: 1; min-height: 0; overflow-y: auto; padding: 16px; background: #f8fafc; display: flex; flex-direction: column; gap: 8px; overscroll-behavior: contain; touch-action: pan-y; -webkit-overflow-scrolling: touch; }" +
     "#n2x-messages .msg { max-width: 82%; padding: 10px 14px; border-radius: 14px; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word; font-size: 13px; animation: n2x-msg-in 0.2s ease-out; }" +
     "@keyframes n2x-msg-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }" +
     "#n2x-messages .msg.user { align-self: flex-end; background: var(--n2x-color); color: #fff; border-bottom-right-radius: 4px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }" +
@@ -81,6 +89,8 @@
     "@media (max-width: 480px) {" +
     "  #n2x-widget { right: 16px; bottom: 16px; }" +
     "  #n2x-panel { position: fixed; right: 0; bottom: 0; left: 0; top: 0; width: 100%; height: 100%; max-width: 100vw; max-height: 100dvh; border-radius: 0; }" +
+    // 16px stops iOS Safari from zooming the page when the input is focused.
+    "  #n2x-input { font-size: 16px; }" +
     "}";
 
   document.head.appendChild(style);
@@ -115,33 +125,49 @@
   var agents = [];
   var currentAgentId = null;
 
-  var POLL_MS = 15000, pollTimer = null, pendingOwnRequest = 0;
+  // Human-agent replies reach the visitor by polling /chat/messages/<session>.
+  var POLL_MS = 8000, pollTimer = null, pendingOwnRequest = 0;
   function lastSeenKey() { return "n2x_last_seen_" + sessionId; }
-  var lastSeenMsgId = parseInt(localStorage.getItem(lastSeenKey()), 10) || 0;
+  var lastSeenMsgId = parseInt(lsGet(lastSeenKey()), 10) || 0;
+  function setCursor(id) { lastSeenMsgId = id; lsSet(lastSeenKey(), String(id)); }
   function advanceCursor(id) {
     if (typeof id !== "number" || isNaN(id)) return;
-    if (id > lastSeenMsgId) { lastSeenMsgId = id; try { localStorage.setItem(lastSeenKey(), String(id)); } catch (e) {} }
+    if (id > lastSeenMsgId) setCursor(id);
   }
+  // Returns null (not []) on a network/server error so a failed poll is never
+  // mistaken for "the conversation was wiped".
   async function fetchSessionMessages() {
-    try { var res = await fetch(API_BASE + "/chat/messages/" + encodeURIComponent(sessionId)); return res.ok ? (await res.json()) || [] : []; }
-    catch (e) { return []; }
+    try {
+      var res = await fetch(API_BASE + "/chat/messages/" + encodeURIComponent(sessionId), { cache: "no-store" });
+      return res.ok ? (await res.json()) || [] : null;
+    } catch (e) { return null; }
   }
   function renderNewMessages(msgs) {
-    var maxId = lastSeenMsgId;
-    msgs.forEach(function (m) { if (m.id > maxId) maxId = m.id; if (m.id > lastSeenMsgId && m.role === "assistant") addMessage(m.content, "bot"); });
-    advanceCursor(maxId);
+    var serverMax = 0;
+    msgs.forEach(function (m) { if (m.id > serverMax) serverMax = m.id; });
+    // The server's history is behind our cursor: the database was reset (e.g.
+    // an ephemeral Render disk) so ids restarted from 1. Without this, every
+    // human reply would be ignored because its id is below the stale cursor.
+    if (serverMax < lastSeenMsgId) { setCursor(serverMax); return; }
+    msgs.forEach(function (m) { if (m.id > lastSeenMsgId && m.role === "assistant") addMessage(m.content, "bot"); });
+    advanceCursor(serverMax);
   }
   async function pollMessages() {
-    var msgs = await fetchSessionMessages();
     if (pendingOwnRequest > 0) return;
+    var msgs = await fetchSessionMessages();
+    // Re-check: a request may have started while the poll was in flight.
+    if (msgs === null || pendingOwnRequest > 0) return;
     renderNewMessages(msgs);
   }
   function startPolling() { if (pollTimer) return; pollMessages(); pollTimer = setInterval(pollMessages, POLL_MS); }
   function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden && pollTimer) pollMessages();
+  });
 
   if (!lastSeenMsgId) {
     fetchSessionMessages().then(function (msgs) {
-      if (msgs.length && lastSeenMsgId === 0) advanceCursor(msgs[msgs.length - 1].id);
+      if (msgs && msgs.length && lastSeenMsgId === 0) advanceCursor(msgs[msgs.length - 1].id);
     });
   }
 
@@ -170,9 +196,11 @@
 
   function selectAgent(agent) {
     currentAgentId = agent.id;
-    localStorage.setItem("n2x_agent_id", String(agent.id));
+    lsSet("n2x_agent_id", String(agent.id));
     applyColor(agent.primary_color || agent.color || "#2563EB");
-    messagesEl.innerHTML = '<div class="msg bot">' + (agent.greeting || "Hello!") + "</div>";
+    // textContent, not innerHTML: the greeting is admin-supplied text.
+    messagesEl.innerHTML = "";
+    addMessage(agent.greeting || "Hello!", "bot");
   }
 
   async function loadAgents() {
@@ -201,7 +229,7 @@
       var opt = document.createElement("option"); opt.value = a.id; opt.textContent = a.name; agentSelect.appendChild(opt);
     });
     if (!agents.length) return;
-    var saved = localStorage.getItem("n2x_agent_id"), savedId = saved ? parseInt(saved, 10) : null;
+    var saved = lsGet("n2x_agent_id"), savedId = saved ? parseInt(saved, 10) : null;
     var target = agents.filter(function (a) { return a.id === savedId; })[0] || agents[0];
     agentSelect.value = target.id;
     selectAgent(target);
@@ -216,17 +244,87 @@
   loadAgents();
   if (EMBEDDED) startPolling();
 
+  // ---- Mobile scroll containment -------------------------------------------
+  // `body { overflow: hidden }` does NOT stop the page behind the full-screen
+  // panel from scrolling on iOS Safari, and it clobbers the host page's own
+  // overflow style. Pinning the body with position:fixed (and restoring the
+  // scroll offset afterwards) works on every mobile browser.
+  var scrollLock = null;
+  function lockPageScroll() {
+    if (scrollLock || EMBEDDED || !isMobile()) return;
+    var b = document.body, h = document.documentElement;
+    scrollLock = {
+      y: window.pageYOffset || h.scrollTop || 0,
+      position: b.style.position, top: b.style.top, left: b.style.left,
+      right: b.style.right, width: b.style.width, overflow: b.style.overflow,
+      htmlOverscroll: h.style.overscrollBehavior,
+    };
+    b.style.position = "fixed";
+    b.style.top = "-" + scrollLock.y + "px";
+    b.style.left = "0"; b.style.right = "0"; b.style.width = "100%";
+    b.style.overflow = "hidden";
+    h.style.overscrollBehavior = "none";
+  }
+  function unlockPageScroll() {
+    if (!scrollLock) return;
+    var b = document.body, h = document.documentElement, s = scrollLock;
+    scrollLock = null;
+    b.style.position = s.position; b.style.top = s.top; b.style.left = s.left;
+    b.style.right = s.right; b.style.width = s.width; b.style.overflow = s.overflow;
+    h.style.overscrollBehavior = s.htmlOverscroll;
+    window.scrollTo(0, s.y);
+  }
+
+  // Stop touch scrolling from chaining out of the message list (and from the
+  // header/input bar) into the page behind it.
+  var touchStartY = 0;
+  messagesEl.addEventListener("touchstart", function (e) {
+    if (e.touches.length) touchStartY = e.touches[0].clientY;
+  }, { passive: true });
+  messagesEl.addEventListener("touchmove", function (e) {
+    if (!isMobile() || !e.touches.length) return;
+    var dy = e.touches[0].clientY - touchStartY;
+    var atTop = messagesEl.scrollTop <= 0;
+    var atBottom = messagesEl.scrollTop + messagesEl.clientHeight >= messagesEl.scrollHeight - 1;
+    if ((atTop && dy > 0) || (atBottom && dy < 0)) { if (e.cancelable) e.preventDefault(); }
+  }, { passive: false });
+  panel.addEventListener("touchmove", function (e) {
+    if (isMobile() && !messagesEl.contains(e.target) && e.cancelable) e.preventDefault();
+  }, { passive: false });
+
+  // Keep the full-screen panel exactly the size of the visible area when the
+  // on-screen keyboard opens, so the input bar is never pushed off-screen.
+  function syncViewport() {
+    if (EMBEDDED) return;
+    var vv = window.visualViewport;
+    if (vv && isMobile() && !panel.classList.contains("hidden")) {
+      panel.style.height = vv.height + "px";
+      panel.style.maxHeight = vv.height + "px";
+      panel.style.top = vv.offsetTop + "px";
+      panel.style.bottom = "auto";
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    } else {
+      panel.style.height = panel.style.maxHeight = panel.style.top = panel.style.bottom = "";
+    }
+  }
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", syncViewport);
+    window.visualViewport.addEventListener("scroll", syncViewport);
+  }
+
   function openPanel() {
     panel.classList.remove("hidden");
+    lockPageScroll();
+    syncViewport();
     inputEl.focus();
     messagesEl.scrollTop = messagesEl.scrollHeight;
     startPolling();
-    document.body.style.overflow = "hidden";
   }
   function closePanel() {
     panel.classList.add("hidden");
     stopPolling();
-    document.body.style.overflow = "";
+    syncViewport();
+    unlockPageScroll();
   }
 
   launcher.addEventListener("click", openPanel);
@@ -235,7 +333,7 @@
   function addMessage(text, sender) {
     var el = document.createElement("div");
     el.className = "msg " + sender;
-    if (sender === "typing") {
+    if (sender.indexOf("typing") !== -1) {
       el.innerHTML = '<div class="dots"><span></span><span></span><span></span></div>';
     } else {
       el.textContent = text;
@@ -247,7 +345,9 @@
 
   async function sendQuestion() {
     var question = inputEl.value.trim();
-    if (!question) return;
+    // Ignore sends while a reply is pending: double-taps/Enter-repeat would
+    // fire duplicate /chat requests and burn the per-session message quota.
+    if (!question || pendingOwnRequest > 0) return;
     inputEl.value = "";
     addMessage(question, "user");
     var typingEl = addMessage("", "bot typing");

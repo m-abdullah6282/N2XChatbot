@@ -32,6 +32,11 @@ RETRIEVAL_UNAVAILABLE_MESSAGE = (
     "Aap N2X System se info@n2xsystem.com ya +92 323 452 9766 par rabta kar sakte hain."
 )
 
+LLM_UNAVAILABLE_MESSAGE = (
+    "Mujhe filhal jawaab tayyar karne mein dikkat aa rahi hai. "
+    "Aap N2X System se info@n2xsystem.com ya +92 323 452 9766 par rabta kar sakte hain."
+)
+
 RATE_LIMIT_MESSAGE = (
     "Bohat saare sawal aa rahe hain — filhal hamari service busy hai. "
     "Thodi der baad dobara try karein."
@@ -146,7 +151,11 @@ def _generate_answer_or_fallback(question: str, context: str, system_prompt: str
 
 
 @router.post("/chat")
-async def chat(request: ChatRequest):
+def chat(request: ChatRequest):
+    # Plain `def` on purpose: embedding, Qdrant, Groq (with sleep-based retries)
+    # and SQLite are all blocking. FastAPI runs sync endpoints in a threadpool,
+    # whereas `async def` would freeze the event loop (and every other request,
+    # including the widget's message polling) for the whole LLM round trip.
     # Ids of the rows this request inserts. The widget needs the assistant
     # message id to advance its "last seen" cursor past its own answer;
     # without it a stale cursor makes polling re-render old messages.
@@ -204,7 +213,9 @@ async def chat(request: ChatRequest):
     except Exception as exc:
         logger.exception("Embedding generation failed")
         logger.error("Embedding generation failed -> %s: %s", type(exc).__name__, exc)
-        return _reply(RETRIEVAL_UNAVAILABLE_MESSAGE)
+        # was_fallback=1 also opens a human handoff, so the admin can still
+        # answer the visitor while the knowledge service is down.
+        return _reply(RETRIEVAL_UNAVAILABLE_MESSAGE, was_fallback=1)
 
     # 2. Search Qdrant for relevant chunks (strictly the agent's own knowledge)
     relevant_chunks, retrieval_available = search_similar_chunks(
@@ -215,7 +226,7 @@ async def chat(request: ChatRequest):
     )
 
     if not retrieval_available:
-        return _reply(RETRIEVAL_UNAVAILABLE_MESSAGE)
+        return _reply(RETRIEVAL_UNAVAILABLE_MESSAGE, was_fallback=1)
 
     # 3. Soft-retry fallback: when nothing cleared the (already lowered)
     # threshold, run one more forgiving pass with a near-zero score cut so the
@@ -272,15 +283,19 @@ async def chat(request: ChatRequest):
         return _reply(FALLBACK_MESSAGE, sources_used=0, was_fallback=1)
 
     answer, is_rate_limit = _generate_answer_or_fallback(
-        request.question, context, system_prompt, RETRIEVAL_UNAVAILABLE_MESSAGE
+        request.question, context, system_prompt, LLM_UNAVAILABLE_MESSAGE
     )
 
-    was_fallback = 1 if is_rate_limit or answer == FALLBACK_MESSAGE else 0
+    was_fallback = (
+        1
+        if is_rate_limit or answer == LLM_UNAVAILABLE_MESSAGE or FALLBACK_MESSAGE in answer
+        else 0
+    )
     return _reply(answer, sources_used=sources_used, was_fallback=was_fallback)
 
 
 @router.get("/chat/messages/{session_id}")
-async def session_messages(session_id: str):
+def session_messages(session_id: str):
     """Lightweight public endpoint the widget polls to pick up new
     (e.g. human-agent) assistant messages for its own session."""
     return get_session_messages(session_id)

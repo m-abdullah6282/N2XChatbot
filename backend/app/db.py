@@ -10,11 +10,18 @@ from datetime import datetime, timedelta
 
 from app.config import ADMIN_PASSWORD, ADMIN_USERNAME
 
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "chatbot.db")
+# DB_PATH can point at a persistent disk (e.g. /var/data/chatbot.db on Render).
+# On Render's free tier the default location is EPHEMERAL: every deploy or
+# spin-down wipes chatbot.db, which deletes admins, agents, chats and handoffs.
+DB_PATH = os.getenv("DB_PATH") or os.path.join(
+    os.path.dirname(os.path.dirname(__file__)), "chatbot.db"
+)
 
 
 def get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    # timeout: concurrent threadpool requests would otherwise hit
+    # "database is locked" immediately under SQLite's single-writer model.
+    conn = sqlite3.connect(DB_PATH, timeout=15)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -1462,6 +1469,16 @@ def delete_agent(
         params.append(admin_id)
     with get_conn() as conn:
         cur = conn.execute(f"DELETE FROM agents WHERE id = ?{scope}", params)
+        if cur.rowcount > 0:
+            # Clean up rows that would otherwise be orphaned (foreign keys are
+            # not enforced by SQLite here): documents, API keys, open handoffs.
+            conn.execute("DELETE FROM documents WHERE agent_id = ?", (agent_id,))
+            conn.execute("DELETE FROM api_keys WHERE agent_id = ?", (agent_id,))
+            conn.execute(
+                "UPDATE handoffs SET status = 'resolved', resolved_at = datetime('now') "
+                "WHERE agent_id = ? AND status = 'pending'",
+                (agent_id,),
+            )
     return cur.rowcount > 0
 
 
