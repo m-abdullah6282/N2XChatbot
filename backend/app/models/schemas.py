@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-
+from pydantic import BaseModel, Field 
 
 class ChatRequest(BaseModel):
     question: str
@@ -59,3 +59,8 @@ class AdminUserCreate(BaseModel):
 
 class AdminPasswordChange(BaseModel):
     password: str
+
+class KeyChatRequest(BaseModel):
+    # agent_id jaan boojh kar nahi hai: agent hamesha API key se tay hota hai.
+    question: str = Field(..., min_length=1, max_length=2000)
+    session_id: str | None = None

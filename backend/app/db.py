@@ -244,6 +244,7 @@ def init_db():
     backfill_subscriptions()
     backfill_documents()
     backfill_api_key_hashes()
+    scrub_plaintext_api_keys()  # NEW (change d): remove raw legacy keys from the DB
     backfill_message_agent_ids()
 
 
@@ -628,17 +629,21 @@ def save_message(
         return cur.lastrowid
 
 
-def get_session_messages(session_id: str) -> list[dict]:
+# CHANGED (change a): optional agent_id filter so a session can only be read
+# through the agent it belongs to.
+def get_session_messages(session_id: str, agent_id: int | None = None) -> list[dict]:
+    query = """
+        SELECT id, role, content, agent_id, created_at
+        FROM messages
+        WHERE session_id = ?
+    """
+    params: list = [session_id]
+    if agent_id is not None:
+        query += " AND agent_id = ?"
+        params.append(agent_id)
+    query += " ORDER BY id"
     with get_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT id, role, content, agent_id, created_at
-            FROM messages
-            WHERE session_id = ?
-            ORDER BY id
-            """,
-            (session_id,),
-        ).fetchall()
+        rows = conn.execute(query, params).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -1046,6 +1051,18 @@ def backfill_api_key_hashes():
                 )
 
 
+# NEW (change d): runs after backfill_api_key_hashes(), so every legacy key
+# already has its hash before the raw value is replaced.
+def scrub_plaintext_api_keys():
+    """Replace legacy raw keys with a non-secret marker. Keys keep working via
+    api_key_hash. Irreversible: back up chatbot.db first. Idempotent."""
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE api_keys SET api_key = 'sha256:' || api_key_hash "
+            "WHERE api_key_hash IS NOT NULL AND api_key NOT LIKE 'sha256:%'"
+        )
+
+
 def backfill_message_agent_ids():
     """Migration safety: attach legacy NULL-agent messages (assistant/human
     replies persisted before agent attribution) to the most recently observed
@@ -1073,12 +1090,16 @@ def backfill_message_agent_ids():
         )
 
 
+# CHANGED (change b): the raw key is no longer stored in the api_key column.
+# Only its SHA-256 hash is persisted; the column holds a non-secret marker
+# because it is NOT NULL UNIQUE.
 def create_api_key(label: str, admin_id: int | None = None, agent_id: int | None = None) -> str:
     api_key = "n2x_" + secrets.token_hex(24)
+    key_hash = _hash_api_key(api_key)
     with get_conn() as conn:
         conn.execute(
             "INSERT INTO api_keys (api_key, api_key_hash, label, admin_id, agent_id) VALUES (?, ?, ?, ?, ?)",
-            (api_key, _hash_api_key(api_key), label, admin_id, agent_id),
+            ("sha256:" + key_hash, key_hash, label, admin_id, agent_id),
         )
     return api_key
 
@@ -1149,8 +1170,8 @@ def resolve_api_key(raw_key: str, want_agent_id: int | None = None) -> dict | No
 
     Lookup order: a new key is stored as its SHA-256 hash (api_key_hash), so we
     match by hash first. Legacy keys predate hashing and live in plaintext in
-    the api_key column, so we fall back to a plaintext match for them. The raw
-    key is never surfaced."""
+    the api_key column, so we fall back to a plaintext match for them, but only
+    for rows that have no hash yet. The raw key is never surfaced."""
     if not raw_key:
         return None
     hashed = _hash_api_key(raw_key)
@@ -1159,8 +1180,9 @@ def resolve_api_key(raw_key: str, want_agent_id: int | None = None) -> dict | No
             "SELECT * FROM api_keys WHERE api_key_hash = ?", (hashed,)
         ).fetchone()
         if not row:
+            # CHANGED (change c): plaintext fallback only for un-hashed legacy rows.
             row = conn.execute(
-                "SELECT * FROM api_keys WHERE api_key = ?", (raw_key,)
+                "SELECT * FROM api_keys WHERE api_key = ? AND api_key_hash IS NULL", (raw_key,)
             ).fetchone()
     if not row or not row["is_active"]:
         return None
