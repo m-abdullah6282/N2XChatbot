@@ -206,7 +206,7 @@ def _generate_answer_or_fallback(question: str, context: str, system_prompt: str
 
 def _run_chat(question: str, session_id: str | None, agent_id: int | None) -> dict:
     """The ONE chat pipeline shared by the public /chat route and the API-key
-    /v1/chat route. Plain `def` on purpose: embedding, Qdrant, Groq and SQLite
+    /v1/chat route. Plain `def` on purpose: embedding, Qdrant, Groq and Postgres
     are blocking, so FastAPI runs sync endpoints in its threadpool instead of
     freezing the event loop."""
     user_message_id: int | None = None

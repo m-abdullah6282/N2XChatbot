@@ -13,3 +13,5 @@ onnxruntime==1.17.0
 tokenizers==0.15.0
 huggingface-hub==0.24.7
 numpy==1.26.0
+psycopg[binary]==3.2.3
+psycopg-pool==3.2.4

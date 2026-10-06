@@ -1,37 +1,84 @@
 import hashlib
 import hmac
+import logging
 import os
 import re
 import secrets
-import sqlite3
-import uuid
 from collections import Counter
+from contextlib import contextmanager
 from datetime import datetime, timedelta
+from typing import Iterator
 
-from app.config import ADMIN_PASSWORD, ADMIN_USERNAME
+import psycopg
+from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 
-# DB_PATH can point at a persistent disk (e.g. /var/data/chatbot.db on Render).
-# On Render's free tier the default location is EPHEMERAL: every deploy or
-# spin-down wipes chatbot.db, which deletes admins, agents, chats and handoffs.
-DB_PATH = os.getenv("DB_PATH") or os.path.join(
-    os.path.dirname(os.path.dirname(__file__)), "chatbot.db"
+from app.config import ADMIN_PASSWORD, ADMIN_USERNAME, DATABASE_URL
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Postgres date/time helpers.
+#
+# We keep TEXT columns (not TIMESTAMPTZ) so the exact SQLite string format
+# "YYYY-MM-DD HH:MM:SS" is preserved. All existing analytics (`_period_cutoff`,
+# string comparison `created_at >= ?`, `date(created_at)` groups, frontend
+# display) keep working unchanged.
+# ---------------------------------------------------------------------------
+NOW_SQL = "to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')"
+PLUS_30_DAYS_SQL = "to_char(NOW() AT TIME ZONE 'UTC' + INTERVAL '30 days', 'YYYY-MM-DD HH24:MI:SS')"
+PLUS_1_YEAR_SQL = "to_char(NOW() AT TIME ZONE 'UTC' + INTERVAL '1 year', 'YYYY-MM-DD HH24:MI:SS')"
+PLUS_1000_YEARS_SQL = "to_char(NOW() AT TIME ZONE 'UTC' + INTERVAL '1000 years', 'YYYY-MM-DD HH24:MI:SS')"
+
+# Sentinels that callers (admin.py) can pass as period start/end to ask for
+# SQL expressions without string-injecting raw SQL.
+SQL_NOW = "__SQL_NOW__"
+SQL_PLUS_30 = "__SQL_PLUS_30__"
+SQL_PLUS_1Y = "__SQL_PLUS_1Y__"
+SQL_PLUS_1000Y = "__SQL_PLUS_1000Y__"
+
+_SQL_EXPR = {
+    SQL_NOW: NOW_SQL,
+    SQL_PLUS_30: PLUS_30_DAYS_SQL,
+    SQL_PLUS_1Y: PLUS_1_YEAR_SQL,
+    SQL_PLUS_1000Y: PLUS_1000_YEARS_SQL,
+}
+
+# ---------------------------------------------------------------------------
+# Connection pool. Sync pool is correct here because FastAPI runs our sync
+# (`def`) endpoints in its threadpool, so each request gets its own thread
+# and its own pooled connection. `dict_row` gives us SQLite-Row-like access
+# (row["col"] and dict(row)).
+# ---------------------------------------------------------------------------
+_pool = ConnectionPool(
+    DATABASE_URL,
+    min_size=1,
+    max_size=10,
+    open=True,
+    kwargs={"row_factory": dict_row},
 )
 
 
-def get_conn() -> sqlite3.Connection:
-    # timeout: concurrent threadpool requests would otherwise hit
-    # "database is locked" immediately under SQLite's single-writer model.
-    conn = sqlite3.connect(DB_PATH, timeout=15)
-    conn.row_factory = sqlite3.Row
-    return conn
+@contextmanager
+def get_conn() -> Iterator[psycopg.Connection]:
+    """Yield a pooled connection inside a transaction. Commits on clean exit,
+    rolls back on exception, returns the connection to the pool in all cases."""
+    with _pool.connection() as conn:
+        yield conn
 
 
-def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
-    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
-    return any(r[1] == column for r in rows)
+def _column_exists(conn: psycopg.Connection, table: str, column: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name = %s AND column_name = %s",
+        (table, column),
+    ).fetchone()
+    return row is not None
 
 
-def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str):
+def _ensure_column(
+    conn: psycopg.Connection, table: str, column: str, definition: str
+) -> None:
     if not _column_exists(conn, table, column):
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
@@ -39,22 +86,22 @@ def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition
 def init_db():
     with get_conn() as conn:
         conn.execute(
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                 session_id TEXT NOT NULL,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
                 was_fallback INTEGER NOT NULL DEFAULT 0,
                 agent_id INTEGER,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                created_at TEXT NOT NULL DEFAULT ({NOW_SQL})
             )
             """
         )
         conn.execute(
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS api_keys (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                 api_key TEXT NOT NULL UNIQUE,
                 api_key_hash TEXT,
                 label TEXT NOT NULL,
@@ -62,62 +109,61 @@ def init_db():
                 agent_id INTEGER,
                 is_active INTEGER NOT NULL DEFAULT 1,
                 last_used_at TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                created_at TEXT NOT NULL DEFAULT ({NOW_SQL})
             )
             """
         )
         conn.execute(
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS admin_sessions (
                 token TEXT PRIMARY KEY,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                created_at TEXT NOT NULL DEFAULT ({NOW_SQL})
             )
             """
         )
         conn.execute(
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS admin_users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                 username TEXT NOT NULL UNIQUE,
                 password_hash TEXT NOT NULL,
                 salt TEXT NOT NULL,
                 role TEXT NOT NULL DEFAULT 'admin',
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                created_at TEXT NOT NULL DEFAULT ({NOW_SQL})
             )
             """
         )
         conn.execute(
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS agents (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                 name TEXT NOT NULL UNIQUE,
                 description TEXT NOT NULL DEFAULT '',
                 system_prompt TEXT NOT NULL,
                 greeting TEXT NOT NULL,
                 owner_admin_id INTEGER REFERENCES admin_users(id),
                 slug TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                created_at TEXT NOT NULL DEFAULT ({NOW_SQL})
             )
             """
         )
-
         conn.execute(
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS handoffs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                 session_id TEXT NOT NULL,
                 agent_id INTEGER,
                 question TEXT NOT NULL,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                created_at TEXT NOT NULL DEFAULT ({NOW_SQL}),
                 status TEXT NOT NULL DEFAULT 'pending',
                 resolved_at TEXT
             )
             """
         )
         conn.execute(
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS documents (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                 agent_id INTEGER REFERENCES agents(id),
                 owner_admin_id INTEGER REFERENCES admin_users(id),
                 filename TEXT NOT NULL,
@@ -127,15 +173,15 @@ def init_db():
                 chunks_count INTEGER NOT NULL DEFAULT 0,
                 status TEXT NOT NULL DEFAULT 'pending',
                 error_message TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                created_at TEXT NOT NULL DEFAULT ({NOW_SQL}),
+                updated_at TEXT NOT NULL DEFAULT ({NOW_SQL})
             )
             """
         )
         conn.execute(
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS plans (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                 name TEXT NOT NULL UNIQUE,
                 price REAL NOT NULL DEFAULT 0,
                 currency TEXT NOT NULL DEFAULT 'PKR',
@@ -149,30 +195,30 @@ def init_db():
                 max_messages_per_period INTEGER,
                 unlimited_messages INTEGER NOT NULL DEFAULT 0,
                 is_active INTEGER NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                created_at TEXT NOT NULL DEFAULT ({NOW_SQL}),
+                updated_at TEXT NOT NULL DEFAULT ({NOW_SQL})
             )
             """
         )
         conn.execute(
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS subscriptions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                 admin_id INTEGER NOT NULL REFERENCES admin_users(id),
                 plan_id INTEGER NOT NULL REFERENCES plans(id),
                 status TEXT NOT NULL DEFAULT 'pending',
                 current_period_start TEXT,
                 current_period_end TEXT,
                 cancel_at_period_end INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                created_at TEXT NOT NULL DEFAULT ({NOW_SQL}),
+                updated_at TEXT NOT NULL DEFAULT ({NOW_SQL})
             )
             """
         )
         conn.execute(
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS payments (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                 admin_id INTEGER NOT NULL REFERENCES admin_users(id),
                 subscription_id INTEGER REFERENCES subscriptions(id),
                 provider TEXT NOT NULL DEFAULT 'manual',
@@ -182,21 +228,21 @@ def init_db():
                 status TEXT NOT NULL DEFAULT 'pending',
                 provider_reference TEXT,
                 provider_response TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                created_at TEXT NOT NULL DEFAULT ({NOW_SQL}),
+                updated_at TEXT NOT NULL DEFAULT ({NOW_SQL})
             )
             """
         )
         conn.execute(
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS usage_records (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                 admin_id INTEGER NOT NULL REFERENCES admin_users(id),
                 period_start TEXT NOT NULL,
                 period_end TEXT NOT NULL,
                 message_count INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                created_at TEXT NOT NULL DEFAULT ({NOW_SQL}),
+                updated_at TEXT NOT NULL DEFAULT ({NOW_SQL})
             )
             """
         )
@@ -214,26 +260,22 @@ def init_db():
         _ensure_column(conn, "api_keys", "is_active", "INTEGER NOT NULL DEFAULT 1")
         _ensure_column(conn, "api_keys", "last_used_at", "TEXT")
         _ensure_column(conn, "api_keys", "api_key_hash", "TEXT")
-        # Plans: new editable fields. max_agents stands in for max_ai_agents and
-        # max_support_agents is added alongside an unlimited flag. None = unlimited.
         _ensure_column(conn, "plans", "max_support_agents", "INTEGER")
         _ensure_column(conn, "plans", "unlimited_ai_agents", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "plans", "unlimited_support_agents", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "plans", "unlimited_documents", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "plans", "unlimited_messages", "INTEGER NOT NULL DEFAULT 0")
 
-        # SQLite cannot add a UNIQUE constraint via ALTER TABLE ADD COLUMN, so
-        # the slug's uniqueness is enforced with a dedicated index. NULL slugs
-        # (pre-migration rows) are permitted until backfill_agent_slugs runs.
-        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_slug ON agents(slug)")
-        # A document filename is unique within its scope (agent_id or shared
-        # NULL scope). SQLite permits multiple NULLs in a UNIQUE index, which
-        # matches the shared-scope behavior (agent_id IS NULL).
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_slug ON agents(slug)"
+        )
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_scope_filename "
             "ON documents(agent_id, filename)"
         )
 
+    # Backfills / seeds run in their own transactions so a failure in one
+    # does not roll back the schema creation above.
     seed_default_agent()
     seed_default_admin()
     backfill_agent_owners()
@@ -244,7 +286,7 @@ def init_db():
     backfill_subscriptions()
     backfill_documents()
     backfill_api_key_hashes()
-    scrub_plaintext_api_keys()  # NEW (change d): remove raw legacy keys from the DB
+    scrub_plaintext_api_keys()
     backfill_message_agent_ids()
 
 
@@ -260,6 +302,7 @@ FALLBACK_MESSAGE_KB = (
     "Kya aap dobara puch sakte hain ya koi aur sawal hai?"
 )
 
+
 # ---------------------------------------------------------------------------
 # Agent-aware context search helpers
 # ---------------------------------------------------------------------------
@@ -267,25 +310,15 @@ FALLBACK_MESSAGE_KB = (
 def _get_agent_uploaded_files_dir(agent_id: int | None = None) -> str:
     """Return the folder path for uploaded files, scoped by agent.
 
-    - agent_id=None  → shared root:  <project>/uploaded_files/
-    - agent_id given → agent folder: <project>/uploaded_files/agent_<id>/
+    - agent_id=None  -> shared root:  <project>/uploaded_files/
+    - agent_id given -> agent folder: <project>/uploaded_files/agent_<id>/
     """
     base = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploaded_files")
     if agent_id is None:
         return base
     return os.path.join(base, f"agent_{agent_id}")
 
-# The ONE universal system-prompt template every agent shares. It is a single
-# constant that carries all FIXED behavior rules (language handling, greeting
-# hygiene, casual vs factual classification, contact/address handling, fallback,
-# tone, answer length). Admins never edit it.
-#
-# The template has exactly two placeholders the agent fills in:
-#   {agent_name}        -> the agent's name
-#   {agent_description} -> the agent's one-line description/purpose
-#
-# build_system_prompt() fills them; a custom "Advanced System Prompt" (optional,
-# power-user) can override the whole thing per-agent and is stored in the row.
+
 SYSTEM_PROMPT_TEMPLATE = f"""You are {{agent_name}}. {{agent_description}}
 
 UNIVERSAL RULES — follow these for every conversation:
@@ -324,6 +357,7 @@ A: [Answer strictly from the Context. List only what is mentioned there.]
 Q: "projects k naam btao"
 A: [List ALL project names found in the Context, one by one.]"""  # noqa: E501
 
+
 def get_context_for_agent(
     query: str,
     agent_id: int | None = None,
@@ -345,7 +379,6 @@ def get_context_for_agent(
     Falls back to NO_RELEVANT_CONTEXT_FOUND when nothing relevant is found.
     """
     try:
-        # Lazy import to avoid circular deps / heavy startup cost
         from app.rag import search_documents_for_agent  # type: ignore
         results = search_documents_for_agent(
             query=query,
@@ -357,7 +390,6 @@ def get_context_for_agent(
             return NO_RELEVANT_CONTEXT_FOUND
         return "\n\n".join(results)
     except ImportError:
-        # RAG module not available — graceful degradation
         return NO_RELEVANT_CONTEXT_FOUND
     except Exception:
         return NO_RELEVANT_CONTEXT_FOUND
@@ -389,13 +421,6 @@ DEFAULT_GREETING = "Hello! Main aapki kaise madad kar sakta hoon?"
 
 
 def get_system_prompt_for_agent(agent: dict | None) -> str:
-    """Return the correct system prompt for a resolved agent dict.
-
-    - If the agent has a non-empty custom (Advanced) system prompt, use it.
-    - Otherwise, build the universal template filled with the agent's
-      name + description.
-    - Falls back to DEFAULT_SYSTEM_PROMPT when agent is None.
-    """
     if not agent:
         return DEFAULT_SYSTEM_PROMPT
     stored = (agent.get("system_prompt") or "").strip()
@@ -408,7 +433,6 @@ def get_system_prompt_for_agent(agent: dict | None) -> str:
 
 
 def get_greeting_for_agent(agent: dict | None) -> str:
-    """Return the greeting message for a resolved agent dict."""
     if not agent:
         return DEFAULT_GREETING
     return (agent.get("greeting") or DEFAULT_GREETING).strip() or DEFAULT_GREETING
@@ -419,16 +443,23 @@ def seed_default_agent():
         row = conn.execute("SELECT COUNT(*) AS c FROM agents").fetchone()
         if row["c"] == 0:
             conn.execute(
-                "INSERT INTO agents (name, description, system_prompt, greeting, slug) VALUES (?, ?, ?, ?, ?)",
-                ("N2X Assistant", DEFAULT_AGENT_DESCRIPTION, DEFAULT_SYSTEM_PROMPT, DEFAULT_GREETING, "n2x-assistant"),
+                "INSERT INTO agents (name, description, system_prompt, greeting, slug) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (
+                    "N2X Assistant",
+                    DEFAULT_AGENT_DESCRIPTION,
+                    DEFAULT_SYSTEM_PROMPT,
+                    DEFAULT_GREETING,
+                    "n2x-assistant",
+                ),
             )
 
 
-def _default_agent_owner(conn: sqlite3.Connection) -> int | None:
+def _default_agent_owner(conn: psycopg.Connection) -> int | None:
     """The admin agents are assigned to during migration. Prefer the original
     .env super admin, then any super admin, then the oldest admin."""
     row = conn.execute(
-        "SELECT id FROM admin_users WHERE username = ? ORDER BY id LIMIT 1",
+        "SELECT id FROM admin_users WHERE username = %s ORDER BY id LIMIT 1",
         (ADMIN_USERNAME,),
     ).fetchone()
     if row:
@@ -443,14 +474,13 @@ def _default_agent_owner(conn: sqlite3.Connection) -> int | None:
 
 
 def backfill_agent_owners():
-    """Migration safety: assign every agent without an owner to the original
-    .env super admin so no pre-existing agent is left orphaned."""
+    """Assign every agent without an owner to the original .env super admin."""
     with get_conn() as conn:
         owner_id = _default_agent_owner(conn)
         if owner_id is None:
             return
         conn.execute(
-            "UPDATE agents SET owner_admin_id = ? WHERE owner_admin_id IS NULL",
+            "UPDATE agents SET owner_admin_id = %s WHERE owner_admin_id IS NULL",
             (owner_id,),
         )
 
@@ -460,8 +490,7 @@ def backfill_agent_owners():
 # ---------------------------------------------------------------------------
 
 def _hash_password(password: str, salt: str | None = None) -> tuple[str, str]:
-    """Hash a password with PBKDF2-HMAC-SHA256 and a per-user random salt.
-    Returns (password_hash, salt)."""
+    """PBKDF2-HMAC-SHA256 with a per-user random salt."""
     if salt is None:
         salt = secrets.token_hex(16)
     digest = hashlib.pbkdf2_hmac(
@@ -471,29 +500,25 @@ def _hash_password(password: str, salt: str | None = None) -> tuple[str, str]:
 
 
 def seed_default_admin():
-    """Ensure at least one super admin exists.
-
-    On an empty table, seeds the .env ADMIN_USERNAME / ADMIN_PASSWORD as the
-    super admin. On an existing DB the column migration gives every row the
-    default 'admin' role; here we promote the original .env-seeded admin so
-    there is always at least one super admin in the system."""
+    """Ensure at least one super admin exists."""
     with get_conn() as conn:
         row = conn.execute("SELECT COUNT(*) AS c FROM admin_users").fetchone()
         if row["c"] == 0:
             password_hash, salt = _hash_password(ADMIN_PASSWORD)
             conn.execute(
-                "INSERT INTO admin_users (username, password_hash, salt, role) VALUES (?, ?, ?, ?)",
+                "INSERT INTO admin_users (username, password_hash, salt, role) "
+                "VALUES (%s, %s, %s, %s)",
                 (ADMIN_USERNAME, password_hash, salt, "super_admin"),
             )
             return
 
         env_admin = conn.execute(
-            "SELECT id FROM admin_users WHERE username = ? ORDER BY id LIMIT 1",
+            "SELECT id FROM admin_users WHERE username = %s ORDER BY id LIMIT 1",
             (ADMIN_USERNAME,),
         ).fetchone()
         if env_admin:
             conn.execute(
-                "UPDATE admin_users SET role = 'super_admin' WHERE id = ?",
+                "UPDATE admin_users SET role = 'super_admin' WHERE id = %s",
                 (env_admin["id"],),
             )
             return
@@ -502,10 +527,12 @@ def seed_default_admin():
             "SELECT COUNT(*) AS c FROM admin_users WHERE role = 'super_admin'"
         ).fetchone()["c"]
         if super_count == 0:
-            first = conn.execute("SELECT id FROM admin_users ORDER BY id LIMIT 1").fetchone()
+            first = conn.execute(
+                "SELECT id FROM admin_users ORDER BY id LIMIT 1"
+            ).fetchone()
             if first:
                 conn.execute(
-                    "UPDATE admin_users SET role = 'super_admin' WHERE id = ?",
+                    "UPDATE admin_users SET role = 'super_admin' WHERE id = %s",
                     (first["id"],),
                 )
 
@@ -513,13 +540,12 @@ def seed_default_admin():
 def create_admin_user(username: str, password: str, role: str = "admin") -> dict:
     password_hash, salt = _hash_password(password)
     with get_conn() as conn:
-        cur = conn.execute(
-            "INSERT INTO admin_users (username, password_hash, salt, role) VALUES (?, ?, ?, ?)",
+        row = conn.execute(
+            "INSERT INTO admin_users (username, password_hash, salt, role) "
+            "VALUES (%s, %s, %s, %s) RETURNING id",
             (username, password_hash, salt, role),
-        )
-        admin_id = cur.lastrowid
-    # Grant an active Free subscription so a newly-created normal admin is not
-    # locked out of plan-limit enforcement (mirrors the migration backfill).
+        ).fetchone()
+        admin_id = row["id"]
     seed_plans()
     if get_current_subscription(admin_id) is None:
         free = get_plan_by_name("Free")
@@ -531,7 +557,7 @@ def create_admin_user(username: str, password: str, role: str = "admin") -> dict
 def get_admin_role(admin_id: int) -> str | None:
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT role FROM admin_users WHERE id = ?",
+            "SELECT role FROM admin_users WHERE id = %s",
             (admin_id,),
         ).fetchone()
     return row["role"] if row else None
@@ -540,7 +566,7 @@ def get_admin_role(admin_id: int) -> str | None:
 def get_admin_user(admin_id: int) -> dict | None:
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT id, username, role, created_at FROM admin_users WHERE id = ?",
+            "SELECT id, username, role, created_at FROM admin_users WHERE id = %s",
             (admin_id,),
         ).fetchone()
     return dict(row) if row else None
@@ -549,17 +575,16 @@ def get_admin_user(admin_id: int) -> dict | None:
 def get_admin_user_by_username(username: str) -> dict | None:
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT id, username, role, created_at FROM admin_users WHERE username = ?",
+            "SELECT id, username, role, created_at FROM admin_users WHERE username = %s",
             (username,),
         ).fetchone()
     return dict(row) if row else None
 
 
 def verify_admin_user(username: str, password: str) -> dict | None:
-    """Return the admin user info if credentials match, else None."""
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT id, username, password_hash, salt FROM admin_users WHERE username = ?",
+            "SELECT id, username, password_hash, salt FROM admin_users WHERE username = %s",
             (username,),
         ).fetchone()
     if not row:
@@ -579,12 +604,11 @@ def list_admin_users() -> list[dict]:
 
 
 def delete_admin_user(admin_id: int) -> bool:
-    """Delete an admin user. Returns False (and deletes nothing) when it is
-    the last remaining admin, or the last remaining super_admin, so at least
-    one admin and one super_admin always survive."""
+    """Delete an admin user. Refuses if it would remove the last admin or the
+    last super_admin."""
     with get_conn() as conn:
         target = conn.execute(
-            "SELECT role FROM admin_users WHERE id = ?", (admin_id,)
+            "SELECT role FROM admin_users WHERE id = %s", (admin_id,)
         ).fetchone()
         if not target:
             return False
@@ -596,50 +620,50 @@ def delete_admin_user(admin_id: int) -> bool:
             ).fetchone()["c"]
             if super_count <= 1:
                 return False
-        cur = conn.execute("DELETE FROM admin_users WHERE id = ?", (admin_id,))
+        cur = conn.execute("DELETE FROM admin_users WHERE id = %s", (admin_id,))
         if cur.rowcount > 0:
             conn.execute(
-                "DELETE FROM admin_sessions WHERE admin_user_id = ?", (admin_id,)
+                "DELETE FROM admin_sessions WHERE admin_user_id = %s", (admin_id,)
             )
-    return cur.rowcount > 0
+        return cur.rowcount > 0
 
 
 def change_admin_password(admin_id: int, new_password: str) -> bool:
     password_hash, salt = _hash_password(new_password)
     with get_conn() as conn:
         cur = conn.execute(
-            "UPDATE admin_users SET password_hash = ?, salt = ? WHERE id = ?",
+            "UPDATE admin_users SET password_hash = %s, salt = %s WHERE id = %s",
             (password_hash, salt, admin_id),
         )
     return cur.rowcount > 0
 
 
 def save_message(
-    session_id: str, role: str, content: str, was_fallback: int = 0, agent_id: int | None = None
+    session_id: str,
+    role: str,
+    content: str,
+    was_fallback: int = 0,
+    agent_id: int | None = None,
 ) -> int:
-    """Insert a message and return its autoincrement id so callers (e.g. the
-    /chat response) can tell the widget exactly which row was created. When an
-    agent_id is known (new conversations) it is persisted so every conversation
-    reliably belongs to an agent."""
+    """Insert a message and return its autoincrement id."""
     with get_conn() as conn:
-        cur = conn.execute(
-            "INSERT INTO messages (session_id, role, content, was_fallback, agent_id) VALUES (?, ?, ?, ?, ?)",
+        row = conn.execute(
+            "INSERT INTO messages (session_id, role, content, was_fallback, agent_id) "
+            "VALUES (%s, %s, %s, %s, %s) RETURNING id",
             (session_id, role, content, was_fallback, agent_id),
-        )
-        return cur.lastrowid
+        ).fetchone()
+        return row["id"]
 
 
-# CHANGED (change a): optional agent_id filter so a session can only be read
-# through the agent it belongs to.
 def get_session_messages(session_id: str, agent_id: int | None = None) -> list[dict]:
     query = """
         SELECT id, role, content, agent_id, created_at
         FROM messages
-        WHERE session_id = ?
+        WHERE session_id = %s
     """
     params: list = [session_id]
     if agent_id is not None:
-        query += " AND agent_id = ?"
+        query += " AND agent_id = %s"
         params.append(agent_id)
     query += " ORDER BY id"
     with get_conn() as conn:
@@ -651,36 +675,35 @@ def get_session_messages(session_id: str, agent_id: int | None = None) -> list[d
 # Human agent handoff
 # ---------------------------------------------------------------------------
 
-def create_or_update_handoff(session_id: str, question: str, agent_id: int | None = None):
-    """Flag a conversation for human review. If a pending handoff already
-    exists for this session, refresh its question/timestamp instead of
-    creating a duplicate row."""
+def create_or_update_handoff(
+    session_id: str, question: str, agent_id: int | None = None
+) -> None:
     with get_conn() as conn:
         existing = conn.execute(
-            "SELECT id FROM handoffs WHERE session_id = ? AND status = 'pending'",
+            "SELECT id FROM handoffs WHERE session_id = %s AND status = 'pending'",
             (session_id,),
         ).fetchone()
         if existing:
             conn.execute(
-                """
+                f"""
                 UPDATE handoffs
-                SET question = ?, agent_id = ?, created_at = datetime('now')
-                WHERE id = ?
+                SET question = %s, agent_id = %s, created_at = {NOW_SQL}
+                WHERE id = %s
                 """,
                 (question, agent_id, existing["id"]),
             )
         else:
             conn.execute(
-                "INSERT INTO handoffs (session_id, agent_id, question) VALUES (?, ?, ?)",
+                "INSERT INTO handoffs (session_id, agent_id, question) "
+                "VALUES (%s, %s, %s)",
                 (session_id, agent_id, question),
             )
 
 
-def get_pending_handoffs(admin_id: int | None = None, role: str | None = None) -> list[dict]:
-    """Pending fallbacks, scoped by admin role:
-    - super_admin (admin_id=None too): every pending fallback.
-    - regular admin: only fallbacks from agents they own, plus unassigned
-      (agent_id NULL) shared fallbacks that belong to no specific agent."""
+def get_pending_handoffs(
+    admin_id: int | None = None, role: str | None = None
+) -> list[dict]:
+    """Pending fallbacks, scoped by admin role."""
     query = """
             SELECT h.id, h.session_id, h.question, h.created_at,
                    a.name AS agent_name
@@ -692,7 +715,7 @@ def get_pending_handoffs(admin_id: int | None = None, role: str | None = None) -
     if admin_id is not None and role != "super_admin":
         query += (
             " AND (h.agent_id IS NULL OR h.agent_id IN "
-            "(SELECT id FROM agents WHERE owner_admin_id = ?))"
+            "(SELECT id FROM agents WHERE owner_admin_id = %s))"
         )
         params.append(admin_id)
     query += " ORDER BY h.id DESC"
@@ -702,14 +725,12 @@ def get_pending_handoffs(admin_id: int | None = None, role: str | None = None) -
 
 
 def get_handoff(session_id: str) -> dict | None:
-    """Latest handoff row for a session (any status), so replies can stay
-    attributed to the conversation's agent."""
     with get_conn() as conn:
         row = conn.execute(
             """
             SELECT id, session_id, agent_id, question, status, created_at
             FROM handoffs
-            WHERE session_id = ?
+            WHERE session_id = %s
             ORDER BY id DESC LIMIT 1
             """,
             (session_id,),
@@ -720,10 +741,10 @@ def get_handoff(session_id: str) -> dict | None:
 def resolve_handoff(session_id: str) -> bool:
     with get_conn() as conn:
         cur = conn.execute(
-            """
+            f"""
             UPDATE handoffs
-            SET status = 'resolved', resolved_at = datetime('now')
-            WHERE session_id = ? AND status = 'pending'
+            SET status = 'resolved', resolved_at = {NOW_SQL}
+            WHERE session_id = %s AND status = 'pending'
             """,
             (session_id,),
         )
@@ -731,8 +752,6 @@ def resolve_handoff(session_id: str) -> bool:
 
 
 def get_conversations() -> list[dict]:
-    """All conversation messages with agent + owner info joined in (legacy
-    messages may have NULL agent_id). Used by the Super Admin."""
     with get_conn() as conn:
         rows = conn.execute(
             """
@@ -749,11 +768,6 @@ def get_conversations() -> list[dict]:
 
 
 def get_conversations_for_admin(admin_id: int) -> list[dict]:
-    """Conversation messages scoped to one normal admin: only messages whose
-    agent is owned by that admin, plus legacy messages that carry no agent
-    (recall that historical pre-agent rows cannot be reliably attributed to an
-    owner, so they are intentionally excluded for normal admins to avoid
-    leaking another admin's data)."""
     with get_conn() as conn:
         rows = conn.execute(
             """
@@ -761,7 +775,7 @@ def get_conversations_for_admin(admin_id: int) -> list[dict]:
                    m.agent_id, a.name AS agent_name
             FROM messages m
             INNER JOIN agents a ON a.id = m.agent_id
-            WHERE a.owner_admin_id = ?
+            WHERE a.owner_admin_id = %s
             ORDER BY m.id
             """,
             (admin_id,),
@@ -772,17 +786,8 @@ def get_conversations_for_admin(admin_id: int) -> list[dict]:
 def get_conversations_summary(
     admin_id: int | None = None, role: str | None = None
 ) -> list[dict]:
-    """Grouped conversation summaries for the chat-history / live-chat views.
-
-    Super admin (admin_id None): every conversation across all admins/agents.
-    Normal admin: conversations on their own agents only.
-
-    Each summary carries: session_id, agent_id, agent_name, owner display,
-    first + last activity time, last message preview, and message count.
-    Conversations are identified per session+agent so the same session id
-    against two agents is two distinct entries."""
     if admin_id is not None and role != "super_admin":
-        return _conversation_summaries_clause("WHERE a.owner_admin_id = ?", [admin_id])
+        return _conversation_summaries_clause("WHERE a.owner_admin_id = %s", [admin_id])
     return _conversation_summaries_clause("", [])
 
 
@@ -797,13 +802,13 @@ def _conversation_summaries_clause(clause: str, params: list) -> list[dict]:
                MAX(m.created_at) AS last_activity_at,
                (SELECT content FROM messages m2
                 WHERE m2.session_id = m.session_id
-                  AND m2.agent_id IS m.agent_id
+                  AND m2.agent_id IS NOT DISTINCT FROM m.agent_id
                 ORDER BY m2.id DESC LIMIT 1) AS last_message
         FROM messages m
         LEFT JOIN agents a ON a.id = m.agent_id
         LEFT JOIN admin_users au ON au.id = a.owner_admin_id
         {clause}
-        GROUP BY m.session_id, m.agent_id
+        GROUP BY m.session_id, m.agent_id, a.name, au.username
         ORDER BY last_activity_at DESC
     """
     with get_conn() as conn:
@@ -819,9 +824,8 @@ PERIODS = ("today", "week", "month", "all")
 
 
 def _period_cutoff(period: str) -> str | None:
-    """Return the earliest allowed created_at (SQLite datetime string) for a
-    period, or None for 'all'. Days are counted from UTC now, matching the
-    datetime('now') default used by the messages table."""
+    """Return the earliest allowed created_at (formatted like the DB now
+    expression) for a period, or None for 'all'. UTC-based, matching NOW_SQL."""
     now = datetime.utcnow()
     if period == "today":
         start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -838,7 +842,7 @@ def _period_condition(period: str) -> tuple[str, list]:
     cutoff = _period_cutoff(period)
     if cutoff is None:
         return "", []
-    return "WHERE created_at >= ?", [cutoff]
+    return "WHERE created_at >= %s", [cutoff]
 
 
 def get_total_conversations(period: str = "all") -> int:
@@ -865,7 +869,7 @@ def get_fallback_rate(period: str = "all") -> float:
     where, params = _period_condition(period)
     where_clause = "WHERE role = 'assistant'"
     if where:
-        where_clause += " AND created_at >= ?"
+        where_clause += " AND created_at >= %s"
     with get_conn() as conn:
         row = conn.execute(
             f"""
@@ -878,7 +882,7 @@ def get_fallback_rate(period: str = "all") -> float:
             params,
         ).fetchone()
     total = row["total"] if row else 0
-    fallbacks = row["fallbacks"] if row else 0
+    fallbacks = row["fallbacks"] if row and row["fallbacks"] is not None else 0
     if not total:
         return 0.0
     return round(fallbacks / total * 100, 2)
@@ -921,10 +925,10 @@ def get_conversations_per_day(last_n_days: int = 7) -> list[dict]:
     with get_conn() as conn:
         rows = conn.execute(
             """
-            SELECT date(created_at) AS day, COUNT(DISTINCT session_id) AS c
+            SELECT LEFT(created_at, 10) AS day, COUNT(DISTINCT session_id) AS c
             FROM messages
-            WHERE created_at >= ?
-            GROUP BY day
+            WHERE created_at >= %s
+            GROUP BY LEFT(created_at, 10)
             """,
             [start_str],
         ).fetchall()
@@ -938,73 +942,66 @@ def get_conversations_per_day(last_n_days: int = 7) -> list[dict]:
 
 
 def get_admin_activity_overview() -> list[dict]:
-    """Per-admin activity summary for the Super Admin dashboard.
-    Returns a list of dicts with username, role, agents count, total conversations,
-    total messages, pending handoffs, and last activity time."""
+    """Per-admin activity summary for the Super Admin dashboard."""
     admins = list_admin_users()
     result = []
     with get_conn() as conn:
         for a in admins:
             admin_id = a["id"]
-            # Count agents owned by this admin
+
             agents_row = conn.execute(
-                "SELECT COUNT(*) AS c FROM agents WHERE owner_admin_id = ?",
+                "SELECT COUNT(*) AS c FROM agents WHERE owner_admin_id = %s",
                 (admin_id,),
             ).fetchone()
             agent_count = agents_row["c"] if agents_row else 0
 
-            # Count conversations (distinct session_id) for this admin's agents
             conv_row = conn.execute(
                 """
                 SELECT COUNT(DISTINCT m.session_id) AS c
                 FROM messages m
                 INNER JOIN agents ag ON ag.id = m.agent_id
-                WHERE ag.owner_admin_id = ?
+                WHERE ag.owner_admin_id = %s
                 """,
                 (admin_id,),
             ).fetchone()
             conv_count = conv_row["c"] if conv_row else 0
 
-            # Count total messages for this admin's agents
             msg_row = conn.execute(
                 """
                 SELECT COUNT(*) AS c
                 FROM messages m
                 INNER JOIN agents ag ON ag.id = m.agent_id
-                WHERE ag.owner_admin_id = ?
+                WHERE ag.owner_admin_id = %s
                 """,
                 (admin_id,),
             ).fetchone()
             msg_count = msg_row["c"] if msg_row else 0
 
-            # Count pending handoffs for this admin's agents
             ho_row = conn.execute(
                 """
                 SELECT COUNT(*) AS c
                 FROM handoffs h
                 INNER JOIN agents ag ON ag.id = h.agent_id
-                WHERE ag.owner_admin_id = ? AND h.status = 'pending'
+                WHERE ag.owner_admin_id = %s AND h.status = 'pending'
                 """,
                 (admin_id,),
             ).fetchone()
             handoff_count = ho_row["c"] if ho_row else 0
 
-            # Last activity time
             last_row = conn.execute(
                 """
                 SELECT MAX(m.created_at) AS last_active
                 FROM messages m
                 INNER JOIN agents ag ON ag.id = m.agent_id
-                WHERE ag.owner_admin_id = ?
+                WHERE ag.owner_admin_id = %s
                 """,
                 (admin_id,),
             ).fetchone()
             last_active = last_row["last_active"] if last_row else None
 
-            # Count documents uploaded for this admin's agents
             doc_count = 0
             for agent_id_row in conn.execute(
-                "SELECT id FROM agents WHERE owner_admin_id = ?", (admin_id,)
+                "SELECT id FROM agents WHERE owner_admin_id = %s", (admin_id,)
             ).fetchall():
                 agent_dir = _get_agent_uploaded_files_dir(agent_id_row["id"])
                 if os.path.isdir(agent_dir):
@@ -1034,11 +1031,6 @@ def _hash_api_key(raw: str) -> str:
 
 
 def backfill_api_key_hashes():
-    """Migration safety: populate api_key_hash for any pre-hashing plaintext
-    key whose hash column is still NULL, so those legacy keys validate via the
-    hash path on a later run. The raw key column is left in place (it cannot
-    be reliably erased without breaking nothing; it is only used as a
-    fallback lookup). Idempotent."""
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT id, api_key FROM api_keys WHERE api_key_hash IS NULL"
@@ -1046,16 +1038,14 @@ def backfill_api_key_hashes():
         for row in rows:
             if row["api_key"]:
                 conn.execute(
-                    "UPDATE api_keys SET api_key_hash = ? WHERE id = ?",
+                    "UPDATE api_keys SET api_key_hash = %s WHERE id = %s",
                     (_hash_api_key(row["api_key"]), row["id"]),
                 )
 
 
-# NEW (change d): runs after backfill_api_key_hashes(), so every legacy key
-# already has its hash before the raw value is replaced.
 def scrub_plaintext_api_keys():
     """Replace legacy raw keys with a non-secret marker. Keys keep working via
-    api_key_hash. Irreversible: back up chatbot.db first. Idempotent."""
+    api_key_hash. Idempotent."""
     with get_conn() as conn:
         conn.execute(
             "UPDATE api_keys SET api_key = 'sha256:' || api_key_hash "
@@ -1064,12 +1054,7 @@ def scrub_plaintext_api_keys():
 
 
 def backfill_message_agent_ids():
-    """Migration safety: attach legacy NULL-agent messages (assistant/human
-    replies persisted before agent attribution) to the most recently observed
-    agent of their session, so they are no longer dropped by the conversation
-    summary's agent JOIN. Sessions with no attributable message keep NULL
-    (truly un-attributable legacy/test rows stay visible only to super admins
-    via the raw /conversations feed). Idempotent."""
+    """Attach legacy NULL-agent messages to the session's most recent agent."""
     with get_conn() as conn:
         conn.execute(
             """
@@ -1090,23 +1075,21 @@ def backfill_message_agent_ids():
         )
 
 
-# CHANGED (change b): the raw key is no longer stored in the api_key column.
-# Only its SHA-256 hash is persisted; the column holds a non-secret marker
-# because it is NOT NULL UNIQUE.
-def create_api_key(label: str, admin_id: int | None = None, agent_id: int | None = None) -> str:
+def create_api_key(
+    label: str, admin_id: int | None = None, agent_id: int | None = None
+) -> str:
     api_key = "n2x_" + secrets.token_hex(24)
     key_hash = _hash_api_key(api_key)
     with get_conn() as conn:
         conn.execute(
-            "INSERT INTO api_keys (api_key, api_key_hash, label, admin_id, agent_id) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO api_keys (api_key, api_key_hash, label, admin_id, agent_id) "
+            "VALUES (%s, %s, %s, %s, %s)",
             ("sha256:" + key_hash, key_hash, label, admin_id, agent_id),
         )
     return api_key
 
 
 def _mask_key(key: str) -> str:
-    """Return a truncated, non-sensitive key display for the UI (the raw key is
-    shown once at creation time and never echoed again)."""
     if not key:
         return ""
     if len(key) <= 10:
@@ -1114,12 +1097,14 @@ def _mask_key(key: str) -> str:
     return key[:6] + "…" + key[-4:]
 
 
-def list_api_keys(admin_id: int | None = None, role: str | None = None, agent_id: int | None = None) -> list[dict]:
-    """List API keys. A regular admin only sees keys they own; a super admin
-    may optionally filter by agent_id. Keys are never stored in plaintext, so
-    the raw key cannot be shown; a masked preview is returned instead."""
+def list_api_keys(
+    admin_id: int | None = None,
+    role: str | None = None,
+    agent_id: int | None = None,
+) -> list[dict]:
     query = """
-        SELECT k.id, k.label, k.admin_id, k.agent_id, k.is_active, k.last_used_at, k.created_at,
+        SELECT k.id, k.label, k.admin_id, k.agent_id, k.is_active,
+               k.last_used_at, k.created_at,
                a.name AS agent_name
         FROM api_keys k
         LEFT JOIN agents a ON a.id = k.agent_id
@@ -1127,14 +1112,14 @@ def list_api_keys(admin_id: int | None = None, role: str | None = None, agent_id
     params: list = []
     clauses: list[str] = []
     if admin_id is not None and role != "super_admin":
-        clauses.append("k.admin_id = ?")
+        clauses.append("k.admin_id = %s")
         params.append(admin_id)
     if agent_id is not None:
         if role == "super_admin":
-            clauses.append("k.agent_id = ?")
+            clauses.append("k.agent_id = %s")
             params.append(agent_id)
         else:
-            clauses.append("k.agent_id = ? AND k.admin_id = ?")
+            clauses.append("k.agent_id = %s AND k.admin_id = %s")
             params += [agent_id, admin_id]
     if clauses:
         query += " WHERE " + " AND ".join(clauses)
@@ -1149,40 +1134,31 @@ def list_api_keys(admin_id: int | None = None, role: str | None = None, agent_id
     return result
 
 
-def delete_api_key(key_id: int, admin_id: int | None = None, role: str | None = None) -> bool:
-    """Revoke/delete an API key. A regular admin can only delete their own keys.
-    Historical keys are hard-deleted (the raw secret is never recoverable)."""
+def delete_api_key(
+    key_id: int, admin_id: int | None = None, role: str | None = None
+) -> bool:
     params: list = [key_id]
     scope = ""
     if admin_id is not None and role != "super_admin":
-        scope = " AND admin_id = ?"
+        scope = " AND admin_id = %s"
         params.append(admin_id)
     with get_conn() as conn:
-        cur = conn.execute(f"DELETE FROM api_keys WHERE id = ?{scope}", params)
+        cur = conn.execute(f"DELETE FROM api_keys WHERE id = %s{scope}", params)
     return cur.rowcount > 0
 
 
 def resolve_api_key(raw_key: str, want_agent_id: int | None = None) -> dict | None:
-    """Resolve a raw API key to its agent + admin, enforcing that the key is
-    active and (when :param want_agent_id: is given) that the key belongs to
-    that agent. Returns None when invalid/revoked/mismatched. Updates
-    last_used_at on success.
-
-    Lookup order: a new key is stored as its SHA-256 hash (api_key_hash), so we
-    match by hash first. Legacy keys predate hashing and live in plaintext in
-    the api_key column, so we fall back to a plaintext match for them, but only
-    for rows that have no hash yet. The raw key is never surfaced."""
     if not raw_key:
         return None
     hashed = _hash_api_key(raw_key)
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT * FROM api_keys WHERE api_key_hash = ?", (hashed,)
+            "SELECT * FROM api_keys WHERE api_key_hash = %s", (hashed,)
         ).fetchone()
         if not row:
-            # CHANGED (change c): plaintext fallback only for un-hashed legacy rows.
             row = conn.execute(
-                "SELECT * FROM api_keys WHERE api_key = ? AND api_key_hash IS NULL", (raw_key,)
+                "SELECT * FROM api_keys WHERE api_key = %s AND api_key_hash IS NULL",
+                (raw_key,),
             ).fetchone()
     if not row or not row["is_active"]:
         return None
@@ -1191,7 +1167,7 @@ def resolve_api_key(raw_key: str, want_agent_id: int | None = None) -> dict | No
         return None
     with get_conn() as conn:
         conn.execute(
-            "UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?",
+            f"UPDATE api_keys SET last_used_at = {NOW_SQL} WHERE id = %s",
             (key["id"],),
         )
     return key
@@ -1200,7 +1176,7 @@ def resolve_api_key(raw_key: str, want_agent_id: int | None = None) -> dict | No
 def create_admin_session(token: str, admin_user_id: int | None = None):
     with get_conn() as conn:
         conn.execute(
-            "INSERT INTO admin_sessions (token, admin_user_id) VALUES (?, ?)",
+            "INSERT INTO admin_sessions (token, admin_user_id) VALUES (%s, %s)",
             (token, admin_user_id),
         )
 
@@ -1208,7 +1184,7 @@ def create_admin_session(token: str, admin_user_id: int | None = None):
 def admin_session_exists(token: str) -> bool:
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT 1 FROM admin_sessions WHERE token = ?",
+            "SELECT 1 FROM admin_sessions WHERE token = %s",
             (token,),
         ).fetchone()
     return row is not None
@@ -1217,7 +1193,7 @@ def admin_session_exists(token: str) -> bool:
 def get_session_admin_id(token: str) -> int | None:
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT admin_user_id FROM admin_sessions WHERE token = ?",
+            "SELECT admin_user_id FROM admin_sessions WHERE token = %s",
             (token,),
         ).fetchone()
     return row["admin_user_id"] if row else None
@@ -1225,19 +1201,18 @@ def get_session_admin_id(token: str) -> int | None:
 
 def delete_admin_session(token: str) -> bool:
     with get_conn() as conn:
-        cur = conn.execute("DELETE FROM admin_sessions WHERE token = ?", (token,))
+        cur = conn.execute("DELETE FROM admin_sessions WHERE token = %s", (token,))
     return cur.rowcount > 0
 
 
 def get_agent_by_slug(slug: str) -> dict | None:
-    """Fetch an agent by its URL-friendly slug (used by /chat/{slug})."""
     with get_conn() as conn:
         row = conn.execute(
             """
             SELECT a.*, au.username AS owner_username
             FROM agents a
             LEFT JOIN admin_users au ON au.id = a.owner_admin_id
-            WHERE a.slug = ?
+            WHERE a.slug = %s
             """,
             (slug,),
         ).fetchone()
@@ -1249,16 +1224,6 @@ def get_agent_for_request(
     api_key: str | None = None,
     agent_id: int | None = None,
 ) -> dict | None:
-    """Resolve the active agent for an incoming chat request.
-
-    Priority:
-      1. ``agent_id`` directly (internal / already resolved calls)
-      2. ``slug``     (public widget / embed URL  e.g. /chat/my-agent)
-      3. ``api_key``  (API consumers that pass X-API-Key header)
-
-    Returns the full agent dict (same shape as ``get_agent``), or None when
-    nothing matches. The caller should 404 / reject on None.
-    """
     if agent_id is not None:
         return get_agent(agent_id)
     if slug:
@@ -1271,26 +1236,26 @@ def get_agent_for_request(
 
 
 def _slugify(name: str) -> str:
-    """Turn a name into a URL-friendly slug: lowercase, hyphen-separated,
-    no special characters (e.g. "Sales Assistant!" -> "sales-assistant")."""
     slug = re.sub(r"[^a-z0-9]+", "-", str(name).lower()).strip("-")
     return slug or "agent"
 
 
-def _unique_slug(conn: sqlite3.Connection, base: str = "", exclude_agent_id: int | None = None) -> str:
-    """Return a unique slug derived from ``base``, appending -2, -3, ... when
-    a collision exists (or when the same agent already holds it)."""
+def _unique_slug(
+    conn: psycopg.Connection,
+    base: str = "",
+    exclude_agent_id: int | None = None,
+) -> str:
     candidate = _slugify(base)
     n = 2
     while True:
         if exclude_agent_id is not None:
             row = conn.execute(
-                "SELECT 1 FROM agents WHERE slug = ? AND id != ?",
+                "SELECT 1 FROM agents WHERE slug = %s AND id != %s",
                 (candidate, exclude_agent_id),
             ).fetchone()
         else:
             row = conn.execute(
-                "SELECT 1 FROM agents WHERE slug = ?",
+                "SELECT 1 FROM agents WHERE slug = %s",
                 (candidate,),
             ).fetchone()
         if not row:
@@ -1300,20 +1265,18 @@ def _unique_slug(conn: sqlite3.Connection, base: str = "", exclude_agent_id: int
 
 
 def backfill_agent_slugs():
-    """Migration safety: give every pre-slug agent a slug derived from its
-    name. Idempotent — rows updated once, collisions get -2/-3 suffixes."""
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT id, name FROM agents WHERE slug IS NULL OR slug = '' ORDER BY id"
         ).fetchall()
         for row in rows:
             slug = _unique_slug(conn, row["name"], exclude_agent_id=row["id"])
-            conn.execute("UPDATE agents SET slug = ? WHERE id = ?", (slug, row["id"]))
+            conn.execute(
+                "UPDATE agents SET slug = %s WHERE id = %s", (slug, row["id"])
+            )
 
 
 def _extract_agent_description(legacy_prompt: str, name: str) -> str:
-    """Derive a short one-line purpose for a legacy agent whose row predates
-    the name/description/greeting schema."""
     legacy = (legacy_prompt or "").strip()
     if "N2X System's friendly chat assistant" in legacy:
         return DEFAULT_AGENT_DESCRIPTION
@@ -1324,25 +1287,20 @@ def _extract_agent_description(legacy_prompt: str, name: str) -> str:
 
 
 def backfill_agent_descriptions():
-    """Migration safety: give every pre-description agent a one-line purpose
-    derived from its legacy system prompt. Idempotent — only rows whose
-    description is still empty/whitespace get updated."""
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT id, name, system_prompt FROM agents WHERE description IS NULL OR description = ''"
+            "SELECT id, name, system_prompt FROM agents "
+            "WHERE description IS NULL OR description = ''"
         ).fetchall()
         for row in rows:
             description = _extract_agent_description(row["system_prompt"], row["name"])
             conn.execute(
-                "UPDATE agents SET description = ? WHERE id = ?",
+                "UPDATE agents SET description = %s WHERE id = %s",
                 (description, row["id"]),
             )
 
 
 def _resolve_system_prompt(name: str, description: str, custom: str = "") -> str:
-    """The stored prompt is the universal template filled with the agent's
-    name/description — unless the admin provided a non-empty custom override
-    (Advanced System Prompt)."""
     custom_prompt = (custom or "").strip()
     if custom_prompt:
         return custom_prompt
@@ -1360,8 +1318,10 @@ def create_agent(
 ) -> dict:
     with get_conn() as conn:
         final_slug = _unique_slug(conn, slug or name)
-        cur = conn.execute(
-            "INSERT INTO agents (name, description, system_prompt, greeting, owner_admin_id, slug, primary_color) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        row = conn.execute(
+            "INSERT INTO agents "
+            "(name, description, system_prompt, greeting, owner_admin_id, slug, primary_color) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
             (
                 name,
                 description,
@@ -1371,15 +1331,12 @@ def create_agent(
                 final_slug,
                 primary_color or "#2563EB",
             ),
-        )
-        agent_id = cur.lastrowid
+        ).fetchone()
+        agent_id = row["id"]
     return get_agent(agent_id)
 
 
 def _mark_custom_prompt(agent: dict) -> dict:
-    """Expose whether the stored system prompt is a manual (Advanced) override
-    rather than the auto-built universal-template prompt. The admin UI uses
-    this to pre-expand the Advanced section for legacy/custom agents."""
     stored = (agent.get("system_prompt") or "").strip()
     expected = build_system_prompt(
         agent.get("name") or "", agent.get("description") or ""
@@ -1393,15 +1350,13 @@ def get_agent(
     admin_id: int | None = None,
     role: str | None = None,
 ) -> dict | None:
-    """Fetch an agent. When admin_id/role are given, a non-super admin only
-    gets their own agents (anything else returns None)."""
     with get_conn() as conn:
         row = conn.execute(
             """
             SELECT a.*, au.username AS owner_username
             FROM agents a
             LEFT JOIN admin_users au ON au.id = a.owner_admin_id
-            WHERE a.id = ?
+            WHERE a.id = %s
             """,
             (agent_id,),
         ).fetchone()
@@ -1415,8 +1370,6 @@ def get_agent(
 
 
 def list_agents(admin_id: int | None = None) -> list[dict]:
-    """List agents, optionally scoped to one admin. The super admin case
-    (admin_id=None) returns every agent, each with its owner username."""
     query = """
         SELECT a.id, a.name, a.description, a.system_prompt, a.greeting, a.slug,
                a.created_at, a.owner_admin_id, a.primary_color,
@@ -1426,7 +1379,7 @@ def list_agents(admin_id: int | None = None) -> list[dict]:
     """
     params: list = []
     if admin_id is not None:
-        query += " WHERE a.owner_admin_id = ?"
+        query += " WHERE a.owner_admin_id = %s"
         params.append(admin_id)
     query += " ORDER BY a.id"
     with get_conn() as conn:
@@ -1445,11 +1398,6 @@ def update_agent(
     system_prompt: str = "",
     primary_color: str | None = None,
 ) -> bool:
-    """Update an agent. A non-super admin can only update their own agents
-    (returns False otherwise). The slug is always kept unique: when a non-empty
-    slug is supplied its slugified form is used, otherwise it is re-derived
-    from ``name``. The stored system prompt defaults to the universal template
-    filled with name/description; a non-empty ``system_prompt`` overrides it."""
     with get_conn() as conn:
         final_slug = _unique_slug(conn, slug or name, exclude_agent_id=agent_id)
         params: list = [
@@ -1461,15 +1409,16 @@ def update_agent(
         ]
         color_sql = ""
         if primary_color is not None:
-            color_sql = ", primary_color = ?"
+            color_sql = ", primary_color = %s"
             params.append(primary_color)
         params.append(agent_id)
         scope = ""
         if admin_id is not None and role != "super_admin":
-            scope = " AND owner_admin_id = ?"
+            scope = " AND owner_admin_id = %s"
             params.append(admin_id)
         cur = conn.execute(
-            "UPDATE agents SET name = ?, description = ?, system_prompt = ?, greeting = ?, slug = ?{color_sql} WHERE id = ?{scope}".format(
+            "UPDATE agents SET name = %s, description = %s, system_prompt = %s, "
+            "greeting = %s, slug = %s{color_sql} WHERE id = %s{scope}".format(
                 color_sql=color_sql, scope=scope
             ),
             params,
@@ -1482,30 +1431,26 @@ def delete_agent(
     admin_id: int | None = None,
     role: str | None = None,
 ) -> bool:
-    """Delete an agent. A non-super admin can only delete their own agents
-    (returns False otherwise)."""
     params: list = [agent_id]
     scope = ""
     if admin_id is not None and role != "super_admin":
-        scope = " AND owner_admin_id = ?"
+        scope = " AND owner_admin_id = %s"
         params.append(admin_id)
     with get_conn() as conn:
-        cur = conn.execute(f"DELETE FROM agents WHERE id = ?{scope}", params)
+        cur = conn.execute(f"DELETE FROM agents WHERE id = %s{scope}", params)
         if cur.rowcount > 0:
-            # Clean up rows that would otherwise be orphaned (foreign keys are
-            # not enforced by SQLite here): documents, API keys, open handoffs.
-            conn.execute("DELETE FROM documents WHERE agent_id = ?", (agent_id,))
-            conn.execute("DELETE FROM api_keys WHERE agent_id = ?", (agent_id,))
+            conn.execute("DELETE FROM documents WHERE agent_id = %s", (agent_id,))
+            conn.execute("DELETE FROM api_keys WHERE agent_id = %s", (agent_id,))
             conn.execute(
-                "UPDATE handoffs SET status = 'resolved', resolved_at = datetime('now') "
-                "WHERE agent_id = ? AND status = 'pending'",
+                f"UPDATE handoffs SET status = 'resolved', resolved_at = {NOW_SQL} "
+                "WHERE agent_id = %s AND status = 'pending'",
                 (agent_id,),
             )
     return cur.rowcount > 0
 
 
 # ---------------------------------------------------------------------------
-# Documents (relational record of uploaded knowledge files)
+# Documents
 # ---------------------------------------------------------------------------
 
 DOCUMENT_STATUSES = ("pending", "processing", "ready", "failed")
@@ -1519,20 +1464,18 @@ def create_document(
     file_path: str | None = None,
     file_size: int = 0,
 ) -> int:
-    """Insert a document record and return its id. agent_id=None represents a
-    shared (platform-level) document, mirroring the existing Qdrant scope
-    convention where a missing agent_id payload means 'shared'."""
     with get_conn() as conn:
-        cur = conn.execute(
+        row = conn.execute(
             """
             INSERT INTO documents
                 (agent_id, owner_admin_id, filename, original_filename,
                  file_path, file_size, status)
-            VALUES (?, ?, ?, ?, ?, ?, 'processing')
+            VALUES (%s, %s, %s, %s, %s, %s, 'processing')
+            RETURNING id
             """,
             (agent_id, owner_admin_id, filename, original_filename, file_path, file_size),
-        )
-        return cur.lastrowid
+        ).fetchone()
+        return row["id"]
 
 
 def update_document_status(
@@ -1543,13 +1486,13 @@ def update_document_status(
 ) -> bool:
     with get_conn() as conn:
         cur = conn.execute(
-            """
+            f"""
             UPDATE documents
-            SET status = ?,
-                chunks_count = COALESCE(?, chunks_count),
-                error_message = ?,
-                updated_at = datetime('now')
-            WHERE id = ?
+            SET status = %s,
+                chunks_count = COALESCE(%s, chunks_count),
+                error_message = %s,
+                updated_at = {NOW_SQL}
+            WHERE id = %s
             """,
             (status, chunks_count, error_message, document_id),
         )
@@ -1559,17 +1502,21 @@ def update_document_status(
 def set_document_file_size(document_id: int, file_size: int) -> bool:
     with get_conn() as conn:
         cur = conn.execute(
-            "UPDATE documents SET file_size = ?, updated_at = datetime('now') WHERE id = ?",
+            f"UPDATE documents SET file_size = %s, updated_at = {NOW_SQL} WHERE id = %s",
             (file_size, document_id),
         )
     return cur.rowcount > 0
 
 
-def get_document(document_id: int, admin_id: int | None = None, role: str | None = None) -> dict | None:
-    """Fetch a document. A non-super admin can only fetch documents they own
-    (or, for shared agent_id=NULL documents, only the ones they uploaded)."""
+def get_document(
+    document_id: int,
+    admin_id: int | None = None,
+    role: str | None = None,
+) -> dict | None:
     with get_conn() as conn:
-        row = conn.execute("SELECT * FROM documents WHERE id = ?", (document_id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM documents WHERE id = %s", (document_id,)
+        ).fetchone()
     if not row:
         return None
     doc = dict(row)
@@ -1584,28 +1531,20 @@ def list_documents(
     admin_id: int | None = None,
     role: str | None = None,
 ) -> list[dict]:
-    """List documents within one scope.
-
-    - scope='shared' (agent_id=None): platform-level documents that every admin
-      may see (existing shared-knowledge behaviour is preserved). A normal admin
-      additionally sees only the shared documents they uploaded.
-    - scope='agent' (agent_id given): documents for one agent. A normal admin
-      only sees documents on agents they own.
-    """
     if scope == "agent" and agent_id is None:
         return []
     if scope == "agent":
-        where = "WHERE agent_id = ?"
+        where = "WHERE agent_id = %s"
         params: list = [agent_id]
         if admin_id is not None and role != "super_admin":
-            where += " AND agent_id IN (SELECT id FROM agents WHERE owner_admin_id = ?)"
+            where += " AND agent_id IN (SELECT id FROM agents WHERE owner_admin_id = %s)"
             params.append(admin_id)
         query = "SELECT * FROM documents {where} ORDER BY id".format(where=where)
     else:
         where = "WHERE agent_id IS NULL"
         params = []
         if admin_id is not None and role != "super_admin":
-            where += " AND owner_admin_id = ?"
+            where += " AND owner_admin_id = %s"
             params.append(admin_id)
         query = "SELECT * FROM documents {where} ORDER BY id".format(where=where)
     with get_conn() as conn:
@@ -1617,17 +1556,14 @@ def count_documents_for_admin(
     admin_id: int,
     statuses: tuple[str, ...] = ("processing", "ready"),
 ) -> int:
-    """Count documents owned by an admin (by owner_admin_id) in the given
-    statuses. Used for plan document-limit enforcement. Shared documents
-    uploaded by this admin are included so uploads are not a loophole."""
     if not statuses:
         return 0
-    placeholders = ",".join("?" for _ in statuses)
+    placeholders = ",".join("%s" for _ in statuses)
     with get_conn() as conn:
         row = conn.execute(
             f"""
             SELECT COUNT(*) AS c FROM documents
-            WHERE owner_admin_id = ? AND status IN ({placeholders})
+            WHERE owner_admin_id = %s AND status IN ({placeholders})
             """,
             (admin_id, *statuses),
         ).fetchone()
@@ -1637,24 +1573,27 @@ def count_documents_for_admin(
 def delete_document_record_by_scope(agent_id: int | None, filename: str) -> bool:
     with get_conn() as conn:
         cur = conn.execute(
-            "DELETE FROM documents WHERE agent_id IS ? AND filename = ?",
+            "DELETE FROM documents "
+            "WHERE agent_id IS NOT DISTINCT FROM %s AND filename = %s",
             (agent_id, filename),
         )
     return cur.rowcount > 0
 
 
 def backfill_documents():
-    """Migration safety: create a documents row for every file already on disk
-    that has no record yet. Nothing is deleted. Ownership:
-    - agent-scoped files inherit the agent's owner_admin_id.
-    - shared (agent_id=NULL) files cannot have their original uploader
-      recovered, so owner_admin_id is left NULL (unknown) rather than guessed.
-    chunks_count is 0 because the historical count is not stored anywhere."""
+    """Create a documents row for every file already on disk with no record.
+
+    Postgres enforces foreign keys, unlike SQLite. Stale upload folders for a
+    deleted agent (or with a deleted owner admin) would abort the entire
+    startup transaction, so orphaned folders are skipped with a warning
+    instead of failing the whole migration.
+    """
     import os as _os
 
     def _exists(conn, agent_id, filename):
         row = conn.execute(
-            "SELECT 1 FROM documents WHERE agent_id IS ? AND filename = ? LIMIT 1",
+            "SELECT 1 FROM documents "
+            "WHERE agent_id IS NOT DISTINCT FROM %s AND filename = %s LIMIT 1",
             (agent_id, filename),
         ).fetchone()
         return row is not None
@@ -1662,6 +1601,7 @@ def backfill_documents():
     base = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "uploaded_files")
     _os.makedirs(base, exist_ok=True)
     with get_conn() as conn:
+        # Shared scope (agent_id IS NULL) — no FK to check.
         for name in _os.listdir(base):
             full = _os.path.join(base, name)
             if _os.path.isfile(full):
@@ -1671,47 +1611,69 @@ def backfill_documents():
                         INSERT INTO documents
                             (agent_id, owner_admin_id, filename, original_filename,
                              file_path, file_size, status, chunks_count)
-                        VALUES (NULL, NULL, ?, ?, ?, ?, 'ready', 0)
+                        VALUES (NULL, NULL, %s, %s, %s, %s, 'ready', 0)
                         """,
                         (name, name, name, _os.path.getsize(full)),
                     )
+
+        # Agent-scoped folders: skip orphans whose agent row is gone.
         agent_dir_prefix = "agent_"
         for entry in _os.listdir(base):
             full = _os.path.join(base, entry)
-            if _os.path.isdir(full) and entry.startswith(agent_dir_prefix):
-                try:
-                    agent_id = int(entry.split("_", 1)[1])
-                except ValueError:
-                    continue
-                owner = conn.execute(
-                    "SELECT owner_admin_id FROM agents WHERE id = ?", (agent_id,)
+            if not (_os.path.isdir(full) and entry.startswith(agent_dir_prefix)):
+                continue
+            try:
+                agent_id = int(entry.split("_", 1)[1])
+            except ValueError:
+                continue
+
+            agent_row = conn.execute(
+                "SELECT id, owner_admin_id FROM agents WHERE id = %s", (agent_id,)
+            ).fetchone()
+            if not agent_row:
+                logger.warning(
+                    "backfill_documents: skipping orphaned folder %s "
+                    "(agent id %d no longer exists in agents table)",
+                    entry, agent_id,
+                )
+                continue
+
+            owner_id = agent_row["owner_admin_id"]
+            # Validate owner_admin_id too — the admin may have been deleted.
+            if owner_id is not None:
+                owner_ok = conn.execute(
+                    "SELECT 1 FROM admin_users WHERE id = %s", (owner_id,)
                 ).fetchone()
-                owner_id = owner["owner_admin_id"] if owner else None
-                for fname in _os.listdir(full):
-                    fpath = _os.path.join(full, fname)
-                    if _os.path.isfile(fpath) and not _exists(conn, agent_id, fname):
-                        conn.execute(
-                            """
-                            INSERT INTO documents
-                                (agent_id, owner_admin_id, filename, original_filename,
-                                 file_path, file_size, status, chunks_count)
-                            VALUES (?, ?, ?, ?, ?, ?, 'ready', 0)
-                            """,
-                            (agent_id, owner_id, fname, fname,
-                             _os.path.join(entry, fname), _os.path.getsize(fpath)),
-                        )
+                if not owner_ok:
+                    logger.warning(
+                        "backfill_documents: agent %d points to missing admin %d; "
+                        "storing documents with owner_admin_id=NULL",
+                        agent_id, owner_id,
+                    )
+                    owner_id = None
+
+            for fname in _os.listdir(full):
+                fpath = _os.path.join(full, fname)
+                if _os.path.isfile(fpath) and not _exists(conn, agent_id, fname):
+                    conn.execute(
+                        """
+                        INSERT INTO documents
+                            (agent_id, owner_admin_id, filename, original_filename,
+                             file_path, file_size, status, chunks_count)
+                        VALUES (%s, %s, %s, %s, %s, %s, 'ready', 0)
+                        """,
+                        (agent_id, owner_id, fname, fname,
+                         _os.path.join(entry, fname), _os.path.getsize(fpath)),
+                    )
 
 
 # ---------------------------------------------------------------------------
 # Plans
 # ---------------------------------------------------------------------------
 
-def _seed_plan(conn: sqlite3.Connection, spec: dict) -> None:
-    """Insert a plan only if its name does not exist yet. For existing plans it
-    safely backfills the new limit columns from the spec — it does NOT overwrite
-    admin-edited values on later runs (only fills NULLs/0s)."""
+def _seed_plan(conn: psycopg.Connection, spec: dict) -> None:
     row = conn.execute(
-        "SELECT 1 FROM plans WHERE name = ?", (spec["name"],)
+        "SELECT 1 FROM plans WHERE name = %s", (spec["name"],)
     ).fetchone()
     if not row:
         conn.execute(
@@ -1721,7 +1683,7 @@ def _seed_plan(conn: sqlite3.Connection, spec: dict) -> None:
                  max_documents, unlimited_documents, max_messages_per_period,
                  unlimited_messages, is_active,
                  max_support_agents, unlimited_ai_agents, unlimited_support_agents)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 spec["name"],
@@ -1741,19 +1703,17 @@ def _seed_plan(conn: sqlite3.Connection, spec: dict) -> None:
         )
         return
 
-    # Backfill the new unlimited columns for an existing plan whose row
-    # predates them (NULL/0 only, never overwriting configured values).
     conn.execute(
         """
         UPDATE plans
-        SET max_support_agents = COALESCE(max_support_agents, ?),
-            unlimited_ai_agents = COALESCE(unlimited_ai_agents, ?),
-            unlimited_support_agents = COALESCE(unlimited_support_agents, ?),
+        SET max_support_agents = COALESCE(max_support_agents, %s),
+            unlimited_ai_agents = COALESCE(unlimited_ai_agents, %s),
+            unlimited_support_agents = COALESCE(unlimited_support_agents, %s),
             unlimited_documents = COALESCE(unlimited_documents,
                 CASE WHEN max_documents IS NULL THEN 1 ELSE 0 END),
             unlimited_messages = COALESCE(unlimited_messages,
                 CASE WHEN max_messages_per_period IS NULL THEN 1 ELSE 0 END)
-        WHERE name = ?
+        WHERE name = %s
         """,
         (
             spec.get("max_support_agents"),
@@ -1765,10 +1725,7 @@ def _seed_plan(conn: sqlite3.Connection, spec: dict) -> None:
 
 
 def seed_plans():
-    """Seed the 4 default plans with production-default values:
-    Free / Monthly / Yearly / Lifetime. None for a numeric limit means
-    'unlimited'. Non-destructive: only inserts plans whose name is absent and
-    only NULL-backfills the new limit columns of pre-existing plans."""
+    """Seed the 4 default plans: Free / Monthly / Yearly / Lifetime."""
     default_plans = [
         {
             "name": "Free",
@@ -1829,35 +1786,32 @@ def seed_plans():
 
 
 def rename_plan():
-    """Migration safety: on an existing database the old sample plans
-    (Basic/Pro) are left in place but deactivated after the Free/Lifetime
-    defaults are seeded, so no working subscription breaks and historical rows
-    survive. The 4 standard plan names are guaranteed present via seed_plans."""
+    """Deactivate legacy sample plans (Basic/Pro)."""
     with get_conn() as conn:
         for old in ("Basic", "Pro"):
             conn.execute(
-                "UPDATE plans SET is_active = 0 WHERE name = ? AND is_active = 1",
+                "UPDATE plans SET is_active = 0 WHERE name = %s AND is_active = 1",
                 (old,),
             )
 
 
 def get_plan(plan_id: int) -> dict | None:
     with get_conn() as conn:
-        row = conn.execute("SELECT * FROM plans WHERE id = ?", (plan_id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM plans WHERE id = %s", (plan_id,)
+        ).fetchone()
     return _normalize_plan(dict(row)) if row else None
 
 
 def get_plan_by_name(name: str) -> dict | None:
     with get_conn() as conn:
-        row = conn.execute("SELECT * FROM plans WHERE name = ?", (name,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM plans WHERE name = %s", (name,)
+        ).fetchone()
     return _normalize_plan(dict(row)) if row else None
 
 
 def _normalize_plan(plan: dict) -> dict:
-    """Expose plan limits in a stable shape plus legacy alias fields so
-    existing consumers (subscription_service, UI) keep working. None for a
-    numeric max is the 'unlimited' marker; the explicit unlimited_* booleans
-    are also surfaced."""
     plan.setdefault("max_support_agents", plan.get("max_support_agents"))
     plan.setdefault("unlimited_ai_agents", int(plan.get("max_agents") is None))
     plan.setdefault(
@@ -1883,16 +1837,12 @@ def list_plans(only_active: bool = True) -> list[dict]:
 
 
 def list_all_plans() -> list[dict]:
-    """All plans including inactive ones (for the Super Admin plan editor)."""
     with get_conn() as conn:
         rows = conn.execute("SELECT * FROM plans ORDER BY id").fetchall()
     return [_normalize_plan(dict(r)) for r in rows]
 
 
 def update_plan(plan_id: int, fields: dict) -> bool:
-    """Update editable plan fields. Allowed keys mirror the Super Admin plan
-    editor. Numeric limits store NULL when marked unlimited. Only returns True
-    when the plan exists."""
     allowed = {
         "name", "price", "max_agents", "max_support_agents",
         "unlimited_ai_agents", "unlimited_support_agents", "is_active",
@@ -1910,14 +1860,17 @@ def update_plan(plan_id: int, fields: dict) -> bool:
             "unlimited_documents", "unlimited_messages",
         ):
             value = 1 if value else 0
-        elif key in ("max_agents", "max_support_agents", "max_documents", "max_messages_per_period"):
+        elif key in (
+            "max_agents", "max_support_agents", "max_documents",
+            "max_messages_per_period",
+        ):
             value = None if value is None else int(value)
-        setting.append(f"{key} = ?")
+        setting.append(f"{key} = %s")
         params.append(value)
-    setting.append("updated_at = datetime('now')")
+    setting.append(f"updated_at = {NOW_SQL}")
     with get_conn() as conn:
         cur = conn.execute(
-            f"UPDATE plans SET {', '.join(setting)} WHERE id = ?",
+            f"UPDATE plans SET {', '.join(setting)} WHERE id = %s",
             [*params, plan_id],
         )
     return cur.rowcount > 0
@@ -1928,7 +1881,7 @@ def get_plan_by_id(plan_id: int) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
-# Subscriptions (history preserved; at most one 'active' per admin)
+# Subscriptions
 # ---------------------------------------------------------------------------
 
 def create_subscription(
@@ -1938,41 +1891,39 @@ def create_subscription(
     current_period_start: str | None = None,
     current_period_end: str | None = None,
 ) -> int:
+    """Insert a subscription. Pass SQL_NOW / SQL_PLUS_30 / SQL_PLUS_1Y /
+    SQL_PLUS_1000Y as start/end to use DB-side now expressions, or pass a
+    literal "YYYY-MM-DD HH:MM:SS" string to store it verbatim."""
     if current_period_start is None:
-        current_period_start = "datetime('now')"
+        current_period_start = SQL_NOW
     if current_period_end is None:
-        current_period_end = "datetime('now', '+30 days')"
-    sql_start = (
-        current_period_start
-        if current_period_start.startswith("datetime(")
-        else "?"
-    )
-    sql_end = current_period_end if current_period_end.startswith("datetime(") else "?"
+        current_period_end = SQL_PLUS_30
+    sql_start = _SQL_EXPR.get(current_period_start, "%s")
+    sql_end = _SQL_EXPR.get(current_period_end, "%s")
     params: list = [admin_id, plan_id, status]
-    if sql_start == "?":
+    if sql_start == "%s":
         params.append(current_period_start)
-    if sql_end == "?":
+    if sql_end == "%s":
         params.append(current_period_end)
     with get_conn() as conn:
-        cur = conn.execute(
+        row = conn.execute(
             f"""
             INSERT INTO subscriptions
                 (admin_id, plan_id, status, current_period_start, current_period_end)
-            VALUES (?, ?, ?, {sql_start}, {sql_end})
+            VALUES (%s, %s, %s, {sql_start}, {sql_end})
+            RETURNING id
             """,
             params,
-        )
-        return cur.lastrowid
+        ).fetchone()
+        return row["id"]
 
 
 def get_current_subscription(admin_id: int) -> dict | None:
-    """Return the latest subscription row for an admin (the most recently
-    created active one if several exist, otherwise the latest overall)."""
     with get_conn() as conn:
         row = conn.execute(
             """
             SELECT * FROM subscriptions
-            WHERE admin_id = ?
+            WHERE admin_id = %s
             ORDER BY
                 CASE WHEN status = 'active' THEN 0 ELSE 1 END,
                 id DESC
@@ -1987,7 +1938,7 @@ def list_subscriptions(admin_id: int | None = None) -> list[dict]:
     query = "SELECT * FROM subscriptions"
     params: list = []
     if admin_id is not None:
-        query += " WHERE admin_id = ?"
+        query += " WHERE admin_id = %s"
         params.append(admin_id)
     query += " ORDER BY id DESC"
     with get_conn() as conn:
@@ -1998,17 +1949,14 @@ def list_subscriptions(admin_id: int | None = None) -> list[dict]:
 def set_subscription_status(subscription_id: int, status: str) -> bool:
     with get_conn() as conn:
         cur = conn.execute(
-            "UPDATE subscriptions SET status = ?, updated_at = datetime('now') WHERE id = ?",
+            f"UPDATE subscriptions SET status = %s, updated_at = {NOW_SQL} WHERE id = %s",
             (status, subscription_id),
         )
     return cur.rowcount > 0
 
 
 def backfill_subscriptions():
-    """Migration safety: give every existing admin user an active Free-plan
-    subscription if they have none, so pre-existing admins keep working and
-    plan-limit enforcement does not lock them out. This is a legacy/migration
-    grant, not a payment-backed activation; it is clearly labelled as such."""
+    """Give every existing admin an active Free-plan subscription if none."""
     free = get_plan_by_name("Free")
     if free is None:
         return
@@ -2016,21 +1964,21 @@ def backfill_subscriptions():
         rows = conn.execute("SELECT id FROM admin_users").fetchall()
         for r in rows:
             has = conn.execute(
-                "SELECT 1 FROM subscriptions WHERE admin_id = ? LIMIT 1", (r["id"],)
+                "SELECT 1 FROM subscriptions WHERE admin_id = %s LIMIT 1", (r["id"],)
             ).fetchone()
             if not has:
                 conn.execute(
-                    """
+                    f"""
                     INSERT INTO subscriptions
                         (admin_id, plan_id, status, current_period_start, current_period_end)
-                    VALUES (?, ?, 'active', datetime('now'), datetime('now', '+30 days'))
+                    VALUES (%s, %s, 'active', {NOW_SQL}, {PLUS_30_DAYS_SQL})
                     """,
                     (r["id"], free["id"]),
                 )
 
 
 # ---------------------------------------------------------------------------
-# Payments (provider-independent; no API credentials stored)
+# Payments
 # ---------------------------------------------------------------------------
 
 PAYMENT_STATUSES = ("pending", "success", "failed", "cancelled")
@@ -2047,9 +1995,7 @@ def create_payment(
     provider_reference: str | None = None,
     provider_response: str | None = None,
 ) -> dict:
-    """Create a payment record. Always starts as 'pending'. A payment record
-    never activates a subscription by itself — backend-side provider
-    verification must do that via mark_payment_success + activate_subscription."""
+    """Create a payment record. Always starts as 'pending'."""
     record = {
         "admin_id": admin_id,
         "subscription_id": subscription_id,
@@ -2060,24 +2006,38 @@ def create_payment(
         "provider_reference": provider_reference,
     }
     with get_conn() as conn:
-        cur = conn.execute(
+        row = conn.execute(
             """
             INSERT INTO payments
                 (admin_id, subscription_id, provider, transaction_id,
                  amount, currency, status, provider_reference, provider_response)
-            VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, 'pending', %s, %s)
+            RETURNING id
             """,
-            (record["admin_id"], record["subscription_id"], record["provider"],
-             record["transaction_id"], record["amount"], record["currency"],
-             record["provider_reference"], provider_response),
-        )
-        record["id"] = cur.lastrowid
+            (
+                record["admin_id"],
+                record["subscription_id"],
+                record["provider"],
+                record["transaction_id"],
+                record["amount"],
+                record["currency"],
+                record["provider_reference"],
+                provider_response,
+            ),
+        ).fetchone()
+        record["id"] = row["id"]
     return record
 
 
-def get_payment(payment_id: int, admin_id: int | None = None, role: str | None = None) -> dict | None:
+def get_payment(
+    payment_id: int,
+    admin_id: int | None = None,
+    role: str | None = None,
+) -> dict | None:
     with get_conn() as conn:
-        row = conn.execute("SELECT * FROM payments WHERE id = ?", (payment_id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM payments WHERE id = %s", (payment_id,)
+        ).fetchone()
     if not row:
         return None
     payment = dict(row)
@@ -2090,7 +2050,7 @@ def list_payments(admin_id: int | None = None) -> list[dict]:
     query = "SELECT * FROM payments"
     params: list = []
     if admin_id is not None:
-        query += " WHERE admin_id = ?"
+        query += " WHERE admin_id = %s"
         params.append(admin_id)
     query += " ORDER BY id DESC"
     with get_conn() as conn:
@@ -2101,7 +2061,7 @@ def list_payments(admin_id: int | None = None) -> list[dict]:
 def set_payment_status(payment_id: int, status: str) -> bool:
     with get_conn() as conn:
         cur = conn.execute(
-            "UPDATE payments SET status = ?, updated_at = datetime('now') WHERE id = ?",
+            f"UPDATE payments SET status = %s, updated_at = {NOW_SQL} WHERE id = %s",
             (status, payment_id),
         )
     return cur.rowcount > 0
@@ -2111,12 +2071,14 @@ def set_payment_status(payment_id: int, status: str) -> bool:
 # Usage tracking (foundation; not yet wired into the chat hot-path)
 # ---------------------------------------------------------------------------
 
-def get_usage_record(admin_id: int, period_start: str, period_end: str) -> dict | None:
+def get_usage_record(
+    admin_id: int, period_start: str, period_end: str
+) -> dict | None:
     with get_conn() as conn:
         row = conn.execute(
             """
             SELECT * FROM usage_records
-            WHERE admin_id = ? AND period_start = ? AND period_end = ?
+            WHERE admin_id = %s AND period_start = %s AND period_end = %s
             LIMIT 1
             """,
             (admin_id, period_start, period_end),
@@ -2124,22 +2086,23 @@ def get_usage_record(admin_id: int, period_start: str, period_end: str) -> dict 
     return dict(row) if row else None
 
 
-def increment_usage(admin_id: int, period_start: str, period_end: str, amount: int = 1) -> None:
-    """Increment (or create) the message usage for one admin within one period.
-    Called at most once per message request by the usage service — it must not
-    be invoked multiple times for the same request."""
+def increment_usage(
+    admin_id: int, period_start: str, period_end: str, amount: int = 1
+) -> None:
     row = get_usage_record(admin_id, period_start, period_end)
     with get_conn() as conn:
         if row:
             conn.execute(
-                "UPDATE usage_records SET message_count = message_count + ?, updated_at = datetime('now') WHERE id = ?",
+                f"UPDATE usage_records SET message_count = message_count + %s, "
+                f"updated_at = {NOW_SQL} WHERE id = %s",
                 (amount, row["id"]),
             )
         else:
             conn.execute(
                 """
-                INSERT INTO usage_records (admin_id, period_start, period_end, message_count)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO usage_records
+                    (admin_id, period_start, period_end, message_count)
+                VALUES (%s, %s, %s, %s)
                 """,
                 (admin_id, period_start, period_end, amount),
             )

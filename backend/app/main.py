@@ -25,15 +25,50 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 
+logger = logging.getLogger(__name__)
+
 os.makedirs(UPLOADED_FILES_DIR, exist_ok=True)
 
-init_db()
+# ---------------------------------------------------------------------------
+# Schema init (Postgres).
+#
+# Runs at import time so every worker/process has tables + seeds before the
+# first request. Wrapped so a bad DATABASE_URL surfaces as ONE clear error
+# instead of a psycopg stack trace — fail fast on Render rather than boot
+# into a broken state.
+# ---------------------------------------------------------------------------
+try:
+    init_db()
+except Exception as exc:
+    logger.error(
+        "init_db() failed — the app cannot start. Check DATABASE_URL "
+        "(backend/.env for local dev, or the deployment environment on Render). "
+        "Original error: %s: %s",
+        type(exc).__name__,
+        exc,
+    )
+    raise
 
 app = FastAPI(title="Knowledge Base Chatbot")
 
+# ---------------------------------------------------------------------------
+# CORS.
+#
+# Default is wide-open ("*") to preserve existing behaviour, but this can be
+# locked down with CORS_ORIGINS (comma-separated) — e.g.
+#   CORS_ORIGINS=https://app.example.com,https://admin.example.com
+# ---------------------------------------------------------------------------
+_cors_raw = os.getenv("CORS_ORIGINS", "*").strip()
+CORS_ORIGINS = ["*"] if _cors_raw in ("", "*") else [o.strip() for o in _cors_raw.split(",") if o.strip()]
+if CORS_ORIGINS == ["*"]:
+    logger.warning(
+        "CORS is wide-open (allow_origins=['*']). Set CORS_ORIGINS to your "
+        "real origins before production."
+    )
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -47,37 +82,57 @@ app.mount("/static", StaticFiles(directory=JS_DIR), name="static")
 
 @app.on_event("startup")
 def _preload_models():
+    # 1. Groq key auto-reset loop (independent, background).
     _start_key_reset_timer()
 
+    # 2. Warn if the bootstrap admin password is still the known default.
     from app.config import ADMIN_PASSWORD
-
     if ADMIN_PASSWORD == "change_this_password":
-        logging.getLogger(__name__).warning(
+        logger.warning(
             "ADMIN_PASSWORD is still the default 'change_this_password' - "
             "set ADMIN_USERNAME / ADMIN_PASSWORD in the environment."
         )
 
-    # Warm up in the background so the port binds immediately (Render health
-    # check) while the ~90MB model download and Qdrant setup happen off-thread.
-    # Without this the FIRST chat paid the download cost and could time out.
+    # 3. Confirm the Postgres pool actually connects before accepting traffic.
+    #    (init_db() already ran at import — this is a belt-and-braces check
+    #     that also logs a clear "DB ready" line for the deploy logs.)
+    try:
+        with get_conn() as conn:
+            conn.execute("SELECT 1")
+        logger.info("Postgres connection verified at startup.")
+    except Exception:
+        logger.exception(
+            "Postgres is unreachable at startup — check DATABASE_URL and the "
+            "database service on Render."
+        )
+        raise
+
+    # 4. Warm up embeddings + Qdrant in the background so the port binds
+    #    immediately (Render health check) while the ~90MB model download
+    #    happens off-thread. Without this the FIRST chat paid the download
+    #    cost and could time out.
     threading.Thread(target=_warm_up, daemon=True, name="warm-up").start()
 
 
+# Import here (not at module top) so the DB context manager is available
+# inside _preload_models without a circular import worry.
+from app.db import get_conn  # noqa: E402
+
+
 def _warm_up():
-    log = logging.getLogger(__name__)
     try:
         from app.services import embeddings
 
         embeddings.preload()
     except Exception:
-        log.exception("Embedding model preload failed (will retry on first chat)")
+        logger.exception("Embedding model preload failed (will retry on first chat)")
     try:
         from app.services.vector_store import create_collection_if_not_exists
 
         create_collection_if_not_exists()
-        log.info("Qdrant collection ready.")
+        logger.info("Qdrant collection ready.")
     except Exception:
-        log.exception("Qdrant is unreachable at startup - check QDRANT_URL / API key / cluster status")
+        logger.exception("Qdrant is unreachable at startup - check QDRANT_URL / API key / cluster status")
 
 
 _KEY_RESET_INTERVAL = 24 * 60 * 60
@@ -90,20 +145,16 @@ def _start_key_reset_timer():
         while True:
             threading.Event().wait(_KEY_RESET_INTERVAL)
             _reset_exhausted_keys()
-            logging.getLogger(__name__).info(
-                "Exhausted Groq API keys reset (24h cycle)."
-            )
+            logger.info("Exhausted Groq API keys reset (24h cycle).")
 
     t = threading.Thread(target=_reset_loop, daemon=True, name="key-reset")
     t.start()
-    logging.getLogger(__name__).info(
-        "Groq API key auto-reset background task started (every 24h)."
-    )
+    logger.info("Groq API key auto-reset background task started (every 24h).")
 
 
 @app.exception_handler(Exception)
 async def _global_exception_handler(request: Request, exc: Exception):
-    logging.getLogger(__name__).exception(
+    logger.exception(
         "Unhandled exception on %s %s", request.method, request.url.path
     )
     return JSONResponse(

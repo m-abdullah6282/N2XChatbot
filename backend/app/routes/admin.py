@@ -1,8 +1,9 @@
 import os
 import re
 import shutil
-import sqlite3
 from urllib.parse import quote as urllib_parse_quote
+
+import psycopg
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
@@ -52,6 +53,10 @@ from app.db import (
     set_payment_status,
     get_payment,
     get_admin_activity_overview,
+    SQL_NOW,
+    SQL_PLUS_30,
+    SQL_PLUS_1Y,
+    SQL_PLUS_1000Y,
 )
 from app.models.schemas import (
     ApiKeyCreate,
@@ -351,7 +356,7 @@ def create_new_agent(req: AgentCreate, request: Request):
             system_prompt=req.system_prompt or "",
             primary_color=_validate_color(req.primary_color),
         )
-    except sqlite3.IntegrityError:
+    except psycopg.errors.UniqueViolation:
         raise HTTPException(status_code=400, detail="An agent with this name already exists")
 
 
@@ -379,7 +384,7 @@ def update_existing_agent(agent_id: int, req: AgentUpdate, request: Request):
             system_prompt=req.system_prompt or "",
             primary_color=_validate_color(req.primary_color),
         )
-    except sqlite3.IntegrityError:
+    except psycopg.errors.UniqueViolation:
         raise HTTPException(status_code=400, detail="An agent with this name already exists")
     if not ok:
         raise HTTPException(status_code=404, detail="Agent not found")
@@ -460,7 +465,7 @@ def create_new_admin(req: AdminUserCreate):
 
     try:
         admin = create_admin_user(username, req.password, role)
-    except sqlite3.IntegrityError:
+    except psycopg.errors.UniqueViolation:
         raise HTTPException(status_code=400, detail="A user with this username already exists")
 
     # Augment the response (non-breaking) with the active subscription + plan
@@ -610,7 +615,7 @@ def admin_activate_subscription(admin_id: int, request: Request, payload: dict |
     - deactivates any previously effective 'active' subscription for the admin
       so only ONE active subscription controls limits;
     - preserves full subscription history (past rows are never deleted);
-    - Lifetime never expires (end=NULL);
+    - Lifetime ends +1000 years out (effectively never);
     - Monthly/Yearly set appropriate start/end dates;
     - Free uses existing defaults.
 
@@ -631,18 +636,19 @@ def admin_activate_subscription(admin_id: int, request: Request, payload: dict |
 
     # Deactivate any currently-effective active subscription so at most one
     # active subscription controls limits at a time.
-    from app.db import get_current_subscription as _gcs
-    current = _gcs(admin_id)
+    current = get_current_subscription(admin_id)
     if current and current.get("status") == "active":
         set_subscription_status(current["id"], "past")
 
+    # Sentinel values from db.py are resolved to DB-side NOW() expressions
+    # inside create_subscription. Never pass raw SQL strings here.
     billing = plan.get("billing_interval") or "monthly"
     if billing == "lifetime":
-        start, end = "datetime('now')", "datetime('now', '+1000 years')"
+        start, end = SQL_NOW, SQL_PLUS_1000Y
     elif billing == "yearly":
-        start, end = "datetime('now')", "datetime('now', '+1 year')"
+        start, end = SQL_NOW, SQL_PLUS_1Y
     else:  # monthly / free
-        start, end = "datetime('now')", "datetime('now', '+30 days')"
+        start, end = SQL_NOW, SQL_PLUS_30
 
     sub_id = create_subscription(
         admin_id, plan_id, status="active", current_period_start=start, current_period_end=end
